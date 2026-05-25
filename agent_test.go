@@ -239,6 +239,73 @@ func TestAgentSessionResume(t *testing.T) {
 	}
 }
 
+func TestAgentDefaultSessionRoundTrip(t *testing.T) {
+	m := mock.New("mock")
+	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
+
+	agent, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{m},
+		DefaultModel: "mock/test",
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	events, result := runAndCollect(t, agent, "hello")
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	var text string
+	for _, ev := range events {
+		if td, ok := ev.(TextDeltaEvent); ok {
+			text += td.Delta
+		}
+	}
+	if text != "world" {
+		t.Fatalf("expected 'world', got %q", text)
+	}
+}
+
+func TestAgentCompactNoSessionReturnsEmptyResult(t *testing.T) {
+	agent := newTestAgent(t, nil)
+	ctx := context.Background()
+	result, err := agent.Compact(ctx, CompactOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error from Compact: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil CompactResult")
+	}
+}
+
+func TestAgentCompactPreconditionBusy(t *testing.T) {
+	m := mock.New("mock")
+	m.OnPrompt(mock.Exact("slow")).RespondText("done").Delay(2 * time.Second).Add()
+
+	agent := newTestAgent(t, m)
+	ctx := context.Background()
+
+	// Start a run that will take a while
+	go func() {
+		_, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "slow")})
+		if err != nil {
+			t.Logf("run error: %v", err)
+		}
+	}()
+
+	// Give the run time to start
+	time.Sleep(100 * time.Millisecond)
+
+	_, err := agent.Compact(ctx, CompactOpts{})
+	if err == nil {
+		t.Fatal("expected error from Compact while busy")
+	}
+	if !errors.Is(err, ErrAgentBusy) {
+		t.Fatalf("expected ErrAgentBusy, got %v", err)
+	}
+}
+
 func TestAgentConcurrentRuns(t *testing.T) {
 	m := mock.New("mock")
 	m.OnAny().RespondText("result a").Add()

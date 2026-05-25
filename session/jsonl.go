@@ -12,6 +12,8 @@ import (
 	"github.com/resolute-sh/pi-core-agent-go"
 )
 
+var _ pi.SessionRepo = (*JSONLSession)(nil)
+
 // JSONLSession is an on-disk session backend using append-only JSONL files.
 type JSONLSession struct {
 	dir string

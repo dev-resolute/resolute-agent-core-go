@@ -11,9 +11,10 @@ import (
 
 // ToolResult is the concrete struct returned by a tool's Execute function.
 type ToolResult struct {
-	Content string
-	Data    json.RawMessage
-	IsError bool
+	Content   string
+	Data      json.RawMessage
+	IsError   bool
+	Terminate bool
 }
 
 // RegisteredTool is the internal interface that the agent loop uses to invoke tools.

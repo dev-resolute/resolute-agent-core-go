@@ -8,6 +8,8 @@ import (
 	"github.com/resolute-sh/pi-core-agent-go"
 )
 
+var _ pi.SessionRepo = (*MemorySession)(nil)
+
 // MemorySession is an ephemeral, in-process session backend.
 type MemorySession struct {
 	mu        sync.Mutex

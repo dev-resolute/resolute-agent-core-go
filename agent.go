@@ -19,6 +19,8 @@ type Agent struct {
 
 	running atomic.Int32
 	mu      sync.Mutex
+
+	lastSessionID SessionID
 }
 
 // NewAgent creates an Agent from the given config.
@@ -119,6 +121,10 @@ func (a *Agent) Run(ctx context.Context, opts RunOpts) (*Run, error) {
 	if err := a.session.Append(ctx, sid, opts.Prompt); err != nil {
 		return nil, fmt.Errorf("appending user message: %w", err)
 	}
+
+	a.mu.Lock()
+	a.lastSessionID = sid
+	a.mu.Unlock()
 
 	// Create run
 	thinking := opts.Thinking
@@ -232,6 +238,11 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 				Role:    msg.Role,
 				Content: llm.ThinkingContent{Text: msg.Text()},
 			})
+		case "branch_summary":
+			out = append(out, llm.Message{
+				Role:    msg.Role,
+				Content: llm.TextContent{Text: "<summary>" + msg.Text() + "</summary>"},
+			})
 		default:
 			// User-defined types: pass through as text for v0.1.0.
 			out = append(out, llm.Message{
@@ -244,6 +255,9 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 }
 
 // internalMemorySession is a minimal in-memory session backend used as the default.
+// It intentionally duplicates session.MemorySession because the root pi package
+// cannot import the session subpackage (session imports pi, creating a cycle).
+// A behavioral equivalence test ensures the two implementations do not drift.
 type internalMemorySession struct {
 	mu        sync.Mutex
 	sessions  map[SessionID][]Message

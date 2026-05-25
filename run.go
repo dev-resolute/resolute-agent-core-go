@@ -30,7 +30,9 @@ type Run struct {
 	phase    RunPhase
 	turn     int
 	transcript []Message
+	branchSummaries []BranchSummary
 	lastEvent  AgentEvent
+	terminated bool
 
 	events     chan AgentEvent
 	done       chan RunResult
@@ -132,8 +134,13 @@ func (r *Run) loadTranscript(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	summaries, err := r.agent.session.LoadBranchSummaries(ctx, r.sessionID)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	r.transcript = msgs
+	r.branchSummaries = summaries
 	r.mu.Unlock()
 	return nil
 }
@@ -159,10 +166,21 @@ func (r *Run) loop(ctx context.Context) {
 	defer close(r.done)
 	defer r.agent.running.Add(-1)
 
+	r.emit(AgentStartEvent{})
+
 	// Load existing transcript
 	if err := r.loadTranscript(ctx); err != nil {
+		r.emit(AgentEndEvent{Messages: r.Transcript()})
 		r.done <- RunResult{Err: fmt.Errorf("loading transcript: %w", err)}
 		return
+	}
+
+	// Emit MessageStart for the user prompt that was appended before the loop.
+	if len(r.transcript) > 0 {
+		lastMsg := r.transcript[len(r.transcript)-1]
+		if lastMsg.Role == "user" {
+			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
+		}
 	}
 
 	// Main follow-up loop
@@ -173,12 +191,21 @@ func (r *Run) loop(ctx context.Context) {
 				// Wait for tools with shutdown timeout
 				time.After(r.agent.config.ShutdownTimeout)
 				r.setPhase(PhaseDone)
+				r.emit(AgentEndEvent{Messages: r.Transcript()})
 				r.done <- RunResult{Messages: r.Transcript(), Err: err}
 				return
 			}
 			r.emit(LLMErrorEvent{Error: err, Transient: false})
 			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.Transcript()})
 			r.done <- RunResult{Messages: r.Transcript(), Err: err}
+			return
+		}
+
+		if r.terminated {
+			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.Transcript()})
+			r.done <- RunResult{Messages: r.Transcript(), Err: nil}
 			return
 		}
 
@@ -186,17 +213,21 @@ func (r *Run) loop(ctx context.Context) {
 		select {
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
+				r.emit(AgentEndEvent{Messages: r.Transcript()})
 				r.done <- RunResult{Messages: r.Transcript(), Err: err}
 				return
 			}
+			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
 			r.emit(FollowUpInjectedEvent{Message: fu})
 			continue
 		case <-ctx.Done():
 			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.Transcript()})
 			r.done <- RunResult{Messages: r.Transcript(), Err: context.Cause(ctx)}
 			return
 		default:
 			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.Transcript()})
 			r.done <- RunResult{Messages: r.Transcript(), Err: nil}
 			return
 		}
@@ -215,6 +246,7 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		if err := r.appendTranscript(ctx, sm.msg); err != nil {
 			return err
 		}
+		r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
 		r.emit(SteerInjectedEvent{Message: sm.msg})
 		close(sm.injected)
 	case <-ctx.Done():
@@ -222,10 +254,11 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 	default:
 	}
 
-	// Build LLM request
-	msgs := r.agent.config.ConvertToLLM(r.Transcript())
+	// Build LLM request from compacted context
+	contextMsgs := BuildLLMContext(r.Transcript(), r.branchSummaries)
+	msgs := r.agent.config.ConvertToLLM(contextMsgs)
 	if r.agent.hooks.TransformContext != nil {
-		transformed, err := r.agent.hooks.TransformContext(ctx, TransformContextCtx{Messages: r.Transcript()})
+		transformed, err := r.agent.hooks.TransformContext(ctx, TransformContextCtx{Messages: contextMsgs})
 		if err != nil {
 			return fmt.Errorf("transform context hook: %w", err)
 		}
@@ -261,18 +294,49 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		ProviderHints: r.providerHints,
 	}
 
+	// Wire provider-call hooks via bridge closures.
+	if r.agent.hooks.BeforeProviderRequest != nil {
+		req.OnBeforeRequest = func(headers map[string]string) error {
+			return r.agent.hooks.BeforeProviderRequest(ctx, BeforeProviderRequestCtx{
+				Provider: r.provider.Name(),
+				Model:    r.model,
+				Headers:  headers,
+			})
+		}
+	}
+	if r.agent.hooks.AfterProviderResponse != nil {
+		req.OnAfterResponse = func(statusCode int, headers map[string]string) {
+			r.agent.hooks.AfterProviderResponse(ctx, AfterProviderResponseCtx{
+				Provider:   r.provider.Name(),
+				Model:      r.model,
+				StatusCode: statusCode,
+				Headers:    headers,
+			})
+		}
+	}
+
 	stream := r.provider.Stream(ctx, req)
 
 	// Consume stream
 	var toolCalls []llm.ToolCallContent
 	var assistantText strings.Builder
+	var messageStarted bool
+	var assistantMsg Message
 
 	for ev := range stream.Events {
 		switch e := ev.(type) {
 		case llm.TextDeltaEvent:
+			if !messageStarted {
+				messageStarted = true
+				r.emit(MessageStartEvent{Role: "assistant", MessageType: "text"})
+			}
 			assistantText.WriteString(e.Delta)
 			r.emit(TextDeltaEvent{Delta: e.Delta})
 		case llm.ThinkingDeltaEvent:
+			if !messageStarted {
+				messageStarted = true
+				r.emit(MessageStartEvent{Role: "assistant", MessageType: "thinking"})
+			}
 			r.emit(ThinkingDeltaEvent{Delta: e.Delta})
 		case llm.ToolCallStartEvent:
 			toolCalls = append(toolCalls, llm.ToolCallContent{
@@ -301,7 +365,11 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		case llm.UsageEvent:
 			// Track usage if needed
 		case llm.MessageEndEvent:
-			// End of assistant message
+			// End of assistant message — surface the completed message
+			if assistantText.Len() > 0 {
+				assistantMsg = NewText("assistant", assistantText.String())
+			}
+			r.emit(MessageEndEvent{Message: assistantMsg})
 		}
 	}
 
@@ -312,14 +380,14 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 
 	// Append assistant response to transcript
 	if assistantText.Len() > 0 {
-		msg := NewText("assistant", assistantText.String())
-		if err := r.appendTranscript(ctx, msg); err != nil {
+		assistantMsg = NewText("assistant", assistantText.String())
+		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
 			return err
 		}
 	}
 	for _, tc := range toolCalls {
-		msg := NewToolCall("assistant", tc.CallID, tc.ToolName, tc.Args)
-		if err := r.appendTranscript(ctx, msg); err != nil {
+		assistantMsg = NewToolCall("assistant", tc.CallID, tc.ToolName, tc.Args)
+		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
 			return err
 		}
 	}
@@ -347,6 +415,7 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 		if err := r.appendTranscript(ctx, sm.msg); err != nil {
 			return err
 		}
+		r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
 		r.emit(SteerInjectedEvent{Message: sm.msg})
 		close(sm.injected)
 		return nil // Skip tool execution, go back to LLM
@@ -424,6 +493,23 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 	}
 
 	wg.Wait()
+
+	// Check all-terminate semantics
+	if len(results) > 0 {
+		allTerminate := true
+		for _, res := range results {
+			if res.err != nil || !res.result.Terminate {
+				allTerminate = false
+				break
+			}
+		}
+		if allTerminate {
+			r.mu.Lock()
+			r.terminated = true
+			r.mu.Unlock()
+			return nil
+		}
+	}
 
 	// Append tool results to transcript in call-ID order
 	for _, res := range results {

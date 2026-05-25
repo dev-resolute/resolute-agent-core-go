@@ -50,9 +50,15 @@ func NewSystem(text string) Message {
 	return NewText("system", text)
 }
 
-// Text extracts the text from a text-typed message.
+// NewBranchSummaryMessage creates a branch_summary message.
+func NewBranchSummaryMessage(summary string) Message {
+	body, _ := json.Marshal(summary)
+	return Message{Role: "system", Type: "branch_summary", Body: body}
+}
+
+// Text extracts the text from a text-typed or branch_summary message.
 func (m Message) Text() string {
-	if m.Type != "text" {
+	if m.Type != "text" && m.Type != "branch_summary" {
 		return ""
 	}
 	var s string

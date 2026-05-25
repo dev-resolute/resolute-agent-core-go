@@ -5,6 +5,29 @@ type AgentEvent interface {
 	isAgentEvent()
 }
 
+// AgentStartEvent signals the beginning of a run.
+type AgentStartEvent struct{}
+
+func (AgentStartEvent) isAgentEvent() {}
+
+// AgentEndEvent signals the end of a run.
+type AgentEndEvent struct{ Messages []Message }
+
+func (AgentEndEvent) isAgentEvent() {}
+
+// MessageStartEvent signals the beginning of a message.
+type MessageStartEvent struct {
+	Role        string
+	MessageType string
+}
+
+func (MessageStartEvent) isAgentEvent() {}
+
+// MessageEndEvent signals the end of a message.
+type MessageEndEvent struct{ Message Message }
+
+func (MessageEndEvent) isAgentEvent() {}
+
 // TurnStartEvent signals the beginning of a new agent turn.
 type TurnStartEvent struct{ Turn int }
 
