@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,5 +184,107 @@ func TestAgentRunState(t *testing.T) {
 
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
+	}
+}
+
+func TestAgentSessionResume(t *testing.T) {
+	m := mock.New("mock")
+	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
+	m.OnPrompt(mock.LastUser("resume")).RespondText("continued").Add()
+
+	agent := newTestAgent(t, m)
+
+	// First run
+	ctx := context.Background()
+	run1, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "hello")})
+	if err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	var result1 RunResult
+	select {
+	case result1 = <-run1.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout on run1")
+	}
+	if result1.Err != nil {
+		t.Fatalf("run1 error: %v", result1.Err)
+	}
+	sid := run1.State().SessionID
+	if sid == "" {
+		t.Fatal("expected non-empty session id from run1")
+	}
+
+	// Second run with same session
+	run2, err := agent.Run(ctx, RunOpts{
+		Prompt:    NewText("user", "resume"),
+		SessionID: sid,
+	})
+	if err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	var result2 RunResult
+	select {
+	case result2 = <-run2.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout on run2")
+	}
+	if result2.Err != nil {
+		t.Fatalf("run2 error: %v", result2.Err)
+	}
+
+	// Transcript should include messages from run1
+	transcript := run2.Transcript()
+	if len(transcript) < 3 {
+		t.Fatalf("expected transcript to have messages from run1, got %d", len(transcript))
+	}
+}
+
+func TestAgentConcurrentRuns(t *testing.T) {
+	m := mock.New("mock")
+	m.OnAny().RespondText("result a").Add()
+	m.OnAny().RespondText("result b").Add()
+
+	agent := newTestAgent(t, m)
+	ctx := context.Background()
+
+	var resultA, resultB RunResult
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "run a")})
+		if err != nil {
+			t.Errorf("run a: %v", err)
+			return
+		}
+		select {
+		case resultA = <-run.Done():
+		case <-time.After(5 * time.Second):
+			t.Errorf("timeout on run a")
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "run b")})
+		if err != nil {
+			t.Errorf("run b: %v", err)
+			return
+		}
+		select {
+		case resultB = <-run.Done():
+		case <-time.After(5 * time.Second):
+			t.Errorf("timeout on run b")
+		}
+	}()
+
+	wg.Wait()
+
+	if resultA.Err != nil {
+		t.Fatalf("run a error: %v", resultA.Err)
+	}
+	if resultB.Err != nil {
+		t.Fatalf("run b error: %v", resultB.Err)
 	}
 }

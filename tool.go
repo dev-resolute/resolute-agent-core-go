@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+
+	"github.com/invopop/jsonschema"
 )
 
 // ToolResult is the concrete struct returned by a tool's Execute function.
@@ -62,9 +65,26 @@ func (t *typedTool[P]) Description() string { return t.description }
 func (t *typedTool[P]) IsSequential() bool  { return t.sequential }
 
 func (t *typedTool[P]) Schema() json.RawMessage {
-	// In a full implementation, derive JSON Schema from P via reflection.
-	// For v0.1.0, return an empty object as a placeholder.
-	return json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+	var p P
+	// Handle pointer types by dereferencing.
+	v := reflect.ValueOf(p)
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			v = reflect.New(v.Type().Elem())
+		}
+		p = v.Interface().(P)
+	}
+
+	r := &jsonschema.Reflector{
+		Anonymous:      true,
+		DoNotReference: true,
+	}
+	schema := r.Reflect(p)
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+	}
+	return data
 }
 
 func (t *typedTool[P]) Execute(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error) {
