@@ -104,9 +104,9 @@ type dynamicTool struct {
 	execute     func(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error)
 }
 
-func (t *dynamicTool) Name() string        { return t.name }
-func (t *dynamicTool) Description() string { return t.description }
-func (t *dynamicTool) IsSequential() bool  { return t.sequential }
+func (t *dynamicTool) Name() string            { return t.name }
+func (t *dynamicTool) Description() string     { return t.description }
+func (t *dynamicTool) IsSequential() bool      { return t.sequential }
 func (t *dynamicTool) Schema() json.RawMessage { return t.schema }
 
 func (t *dynamicTool) Execute(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error) {

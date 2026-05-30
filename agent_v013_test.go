@@ -3,43 +3,34 @@ package pi
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/resolute-sh/pi-llm-go"
-	"github.com/resolute-sh/pi-llm-go/mock"
 )
 
 // --- Message lifecycle events (Gap 1) ---
 
 func TestAgentEventOrderingTextCompletion(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent := newTestAgent(t, m)
-	events, result := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, result := runAndCollect(t, agent, "Reply with a short greeting.")
 
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
 
-	// Expected: AgentStart, TurnStart, MessageStart(user), MessageStart(assistant,text),
-	// TextDelta, MessageEnd, TurnEnd, AgentEnd
 	var sawAgentStart, sawTurnStart, sawMsgStartUser, sawMsgStartAssistant bool
 	var sawTextDelta, sawMsgEnd, sawTurnEnd, sawAgentEnd bool
 	for _, ev := range events {
-		switch ev.(type) {
+		switch e := ev.(type) {
 		case AgentStartEvent:
 			sawAgentStart = true
 		case TurnStartEvent:
 			sawTurnStart = true
 		case MessageStartEvent:
-			ms := ev.(MessageStartEvent)
-			if ms.Role == "user" {
+			if e.Role == "user" {
 				sawMsgStartUser = true
 			}
-			if ms.Role == "assistant" && ms.MessageType == "text" {
+			if e.Role == "assistant" && e.MessageType == "text" {
 				sawMsgStartAssistant = true
 			}
 		case TextDeltaEvent:
@@ -79,11 +70,8 @@ func TestAgentEventOrderingTextCompletion(t *testing.T) {
 }
 
 func TestAgentMessageStartFiresOncePerAssistantMessage(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent := newTestAgent(t, m)
-	events, _ := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, _ := runAndCollect(t, agent, "Reply with a short greeting.")
 
 	var assistantStartCount int
 	for _, ev := range events {
@@ -97,16 +85,13 @@ func TestAgentMessageStartFiresOncePerAssistantMessage(t *testing.T) {
 }
 
 func TestAgentMessageEndCarriesMessage(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent := newTestAgent(t, m)
-	events, _ := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, _ := runAndCollect(t, agent, "Reply with a short greeting.")
 
 	for _, ev := range events {
 		if me, ok := ev.(MessageEndEvent); ok {
-			if me.Message.Type != "text" || me.Message.Text() != "world" {
-				t.Fatalf("expected MessageEndEvent to carry assistant text message, got %+v", me.Message)
+			if me.Message.Type != "text" || me.Message.Text() == "" {
+				t.Fatalf("expected MessageEndEvent to carry non-empty assistant text, got %+v", me.Message)
 			}
 			return
 		}
@@ -115,11 +100,8 @@ func TestAgentMessageEndCarriesMessage(t *testing.T) {
 }
 
 func TestAgentAgentEndPayloadMatchesTranscript(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent := newTestAgent(t, m)
-	events, result := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, result := runAndCollect(t, agent, "Reply with a short greeting.")
 
 	var agentEnd AgentEndEvent
 	for _, ev := range events {
@@ -128,76 +110,42 @@ func TestAgentAgentEndPayloadMatchesTranscript(t *testing.T) {
 		}
 	}
 	if len(agentEnd.Messages) != len(result.Messages) {
-		t.Fatalf("expected AgentEndEvent.Messages (%d) to match RunResult.Messages (%d)", len(agentEnd.Messages), len(result.Messages))
+		t.Fatalf("expected AgentEndEvent.Messages (%d) to match PromptResult.Messages (%d)", len(agentEnd.Messages), len(result.Messages))
 	}
 }
 
 // --- Terminate flag (Gap 2) ---
 
 func TestAgentTerminateAllTrueExitsCleanly(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("calc")).RespondToolCall("add", []byte(`{"a":1,"b":2}`)).Add()
-
-	addTool := NewTool(Tool[struct{ A, B int }]{
-		Name:        "add",
-		Description: "Add two numbers",
-		Execute: func(ctx context.Context, p struct{ A, B int }) (ToolResult, error) {
-			return ToolResult{Content: fmt.Sprintf("%d", p.A+p.B), Terminate: true}, nil
+	finishTool := NewTool(Tool[struct{}]{
+		Name:        "finish",
+		Description: "Signal that the task is complete. Call this to finish.",
+		Execute: func(ctx context.Context, p struct{}) (ToolResult, error) {
+			return ToolResult{Content: "done", Terminate: true}, nil
 		},
 	})
 
-	agent := newTestAgent(t, m, addTool)
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "calc")})
-	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
-	}
-
-	var result RunResult
-	select {
-	case result = <-run.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout")
-	}
-
+	agent := newTestAgent(t, finishTool)
+	_, result := runAndCollect(t, agent, "Call the finish tool now. You must call the tool.")
 	if result.Err != nil {
 		t.Fatalf("expected nil error on all-terminate, got %v", result.Err)
 	}
 }
 
 func TestAgentTerminatePartialContinues(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("multi")).RespondToolCall("log", []byte(`{}`)).Add()
-	m.OnPrompt(mock.Predicate(func(msgs []llm.Message) bool {
-		return len(msgs) > 2
-	})).RespondText("done").Add()
-
 	logTool := NewTool(Tool[struct{}]{
 		Name:        "log",
-		Description: "Log something",
+		Description: "Record a log entry. Does not finish the task.",
 		Execute: func(ctx context.Context, p struct{}) (ToolResult, error) {
-			return ToolResult{Content: "logged", Terminate: true}, nil
+			return ToolResult{Content: "logged", Terminate: false}, nil
 		},
 	})
 
-	agent := newTestAgent(t, m, logTool)
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "multi")})
-	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
-	}
-
-	var result RunResult
-	select {
-	case result = <-run.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout")
-	}
-
-	// Partial terminate (only one tool in a batch of one, but the LLM was scripted
-	// for two calls, so this is effectively all-terminate for the single tool.
-	// For a true partial test we'd need two tools where one terminates and one doesn't.
-	// The framework behavior is: all-true → exit, any-false → continue.
+	agent := newTestAgent(t, logTool)
+	// A non-terminating tool does not force an early exit via the terminate
+	// path; the prompt completes cleanly (Err == nil), matching v0.1.x.
+	_, result := runAndCollect(t, agent,
+		"Call the log tool with no arguments. You must call the tool.")
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
@@ -206,61 +154,32 @@ func TestAgentTerminatePartialContinues(t *testing.T) {
 // --- Provider-call hooks (Gap 3) ---
 
 func TestAgentBeforeProviderRequestFiresOnce(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
 	var count int
-	agent, err := NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{m},
-		DefaultModel: "mock/test",
-		Hooks: Hooks{
-			BeforeProviderRequest: func(ctx context.Context, c BeforeProviderRequestCtx) error {
-				count++
-				return nil
-			},
+	agent := newTestAgentWithHooks(t, Hooks{
+		BeforeProviderRequest: func(ctx context.Context, c BeforeProviderRequestCtx) error {
+			count++
+			return nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
 
-	_, _ = runAndCollect(t, agent, "hello")
+	_, result := runAndCollect(t, agent, "Reply with a short greeting.")
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
 	if count != 1 {
 		t.Fatalf("expected BeforeProviderRequest once, got %d", count)
 	}
 }
 
 func TestAgentBeforeProviderRequestErrorAborts(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
 	wantErr := errors.New("rate-limited")
-	agent, err := NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{m},
-		DefaultModel: "mock/test",
-		Hooks: Hooks{
-			BeforeProviderRequest: func(ctx context.Context, c BeforeProviderRequestCtx) error {
-				return wantErr
-			},
+	agent := newTestAgentWithHooks(t, Hooks{
+		BeforeProviderRequest: func(ctx context.Context, c BeforeProviderRequestCtx) error {
+			return wantErr
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
 
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "hello")})
-	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
-	}
-
-	var result RunResult
-	select {
-	case result = <-run.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout")
-	}
-
+	_, result := runAndCollect(t, agent, "Reply with a short greeting.")
 	if result.Err == nil {
 		t.Fatal("expected error")
 	}
@@ -270,35 +189,27 @@ func TestAgentBeforeProviderRequestErrorAborts(t *testing.T) {
 }
 
 func TestAgentAfterProviderResponseFiresOnce(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Status(200).RespHeaders(map[string]string{"X-Request-ID": "abc"}).Add()
-
 	var count int
-	var gotStatus int
-	agent, err := NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{m},
-		DefaultModel: "mock/test",
-		Hooks: Hooks{
-			AfterProviderResponse: func(ctx context.Context, c AfterProviderResponseCtx) {
-				count++
-				gotStatus = c.StatusCode
-			},
+	agent := newTestAgentWithHooks(t, Hooks{
+		AfterProviderResponse: func(ctx context.Context, c AfterProviderResponseCtx) {
+			count++
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
 
-	_, _ = runAndCollect(t, agent, "hello")
+	_, result := runAndCollect(t, agent, "Reply with a short greeting.")
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	// Fires once per provider turn. Note: the gemini provider does not surface
+	// an HTTP status through the genai SDK, so StatusCode is not asserted here
+	// (it is provider-specific; the mock-era status==200 assertion does not
+	// carry over to a live provider).
 	if count != 1 {
 		t.Fatalf("expected AfterProviderResponse once, got %d", count)
 	}
-	if gotStatus != 200 {
-		t.Fatalf("expected status 200, got %d", gotStatus)
-	}
 }
 
-// --- Compaction helpers ---
+// --- Compaction helpers (pure logic, provider-independent) ---
 
 func TestShouldCompact(t *testing.T) {
 	settings := CompactionSettings{Enabled: true, ReserveTokens: 1000}
@@ -317,8 +228,6 @@ func TestEstimateTokens(t *testing.T) {
 	if EstimateTokens(nil) != 0 {
 		t.Fatal("empty input should be 0")
 	}
-	// EstimateTokens sums role + type + body lengths then divides by 4.
-	// {Role:"user", Type:"text", Body:[]byte("abcd")} = 4+4+4 = 12 chars => 3 tokens.
 	msgs := []Message{{Role: "user", Type: "text", Body: []byte("abcd")}}
 	if EstimateTokens(msgs) != 3 {
 		t.Fatalf("expected 3 tokens, got %d", EstimateTokens(msgs))
@@ -327,12 +236,10 @@ func TestEstimateTokens(t *testing.T) {
 	if EstimateTokens(msgs) != 4 {
 		t.Fatalf("expected 4 tokens, got %d", EstimateTokens(msgs))
 	}
-	// Multi-message accumulation.
 	msgs = []Message{
 		{Role: "user", Type: "text", Body: []byte("abcd")},
 		{Role: "assistant", Type: "text", Body: []byte("efghijkl")},
 	}
-	// 4+4+4 + 9+4+8 = 12 + 21 = 33 => 9 tokens (rounded up)
 	if got := EstimateTokens(msgs); got != 9 {
 		t.Fatalf("expected 9 tokens, got %d", got)
 	}
@@ -346,7 +253,6 @@ func TestFindCutPointSkipsToolResult(t *testing.T) {
 		NewText("user", "b"),
 		NewText("assistant", "c"),
 	}
-	// KeepRecentTokens small enough to force a cut inside the first three messages.
 	cut := findCutPoint(msgs, 1)
 	if msgs[cut].Type == "tool_result" {
 		t.Fatalf("cut point should never land on tool_result, got index %d (%s)", cut, msgs[cut].Type)

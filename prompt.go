@@ -11,59 +11,55 @@ import (
 	"github.com/resolute-sh/pi-llm-go"
 )
 
-// RunResult is the terminal value delivered on Run.Done.
-type RunResult struct {
+// PromptResult is the terminal value delivered on EventStream.Done.
+type PromptResult struct {
 	Messages []Message
 	Err      error
 }
 
-// Run represents a single live agent invocation.
-type Run struct {
+// promptRun holds the execution state of a single in-flight prompt. It is not
+// part of the public surface; callers interact with the prompt through the
+// EventStream returned by Agent.Prompt and the control methods on *Agent.
+type promptRun struct {
 	agent         *Agent
-	provider      llm.LLMProvider
-	model         string
-	thinking      llm.ThinkingLevel
+	optModel      string            // per-prompt model override (PromptOpts.Model)
+	optThinking   llm.ThinkingLevel // per-prompt thinking override (PromptOpts.Thinking)
 	providerHints llm.ProviderHints
+	model         string            // last resolved model id, for State()
+	thinking      llm.ThinkingLevel // last effective thinking level, for State()
 	sessionID     SessionID
 
-	mu       sync.Mutex
-	phase    RunPhase
-	turn     int
-	transcript []Message
+	mu              sync.Mutex
+	phase           AgentPhase
+	turn            int
+	transcript      []Message
 	branchSummaries []BranchSummary
-	lastEvent  AgentEvent
-	terminated bool
+	lastEvent       AgentEvent
+	terminated      bool
 
 	events     chan AgentEvent
-	done       chan RunResult
+	done       chan PromptResult
 	steerCh    chan steerMsg
 	followUpCh chan Message
 
 	startedAt      time.Time
 	lastActivityAt time.Time
 
-	// Internal cancellation
 	cancel   context.CancelCauseFunc
 	cancelMu sync.Mutex
 }
 
-// Events returns the event stream.
-func (r *Run) Events() <-chan AgentEvent { return r.events }
-
-// Done returns the terminal result channel.
-func (r *Run) Done() <-chan RunResult { return r.done }
-
-// Stop fire-and-forget cancels the run.
-func (r *Run) Stop() {
+// stop fire-and-forget cancels the prompt.
+func (r *promptRun) stop() {
 	r.cancelMu.Lock()
 	if r.cancel != nil {
-		r.cancel(ErrRunStopped)
+		r.cancel(ErrAgentStopped)
 	}
 	r.cancelMu.Unlock()
 }
 
-// Steer enqueues a message for injection at the next safe point.
-func (r *Run) Steer(ctx context.Context, m Message) error {
+// steer enqueues a message for injection at the next safe point.
+func (r *promptRun) steer(ctx context.Context, m Message) error {
 	select {
 	case r.steerCh <- steerMsg{msg: m, injected: make(chan struct{})}:
 		return nil
@@ -72,8 +68,8 @@ func (r *Run) Steer(ctx context.Context, m Message) error {
 	}
 }
 
-// FollowUp enqueues a message for after the current run completes.
-func (r *Run) FollowUp(ctx context.Context, m Message) error {
+// followUp enqueues a message for after the current prompt completes.
+func (r *promptRun) followUp(ctx context.Context, m Message) error {
 	select {
 	case r.followUpCh <- m:
 		return nil
@@ -82,27 +78,26 @@ func (r *Run) FollowUp(ctx context.Context, m Message) error {
 	}
 }
 
-// State returns a snapshot of the run's current state.
-func (r *Run) State() RunState {
+// state returns a snapshot of the prompt's current state.
+func (r *promptRun) state() AgentState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var pending []PendingToolCall
-	// Pending tool calls are tracked during execution; simplified for v0.1.0.
-	return RunState{
-		Phase:          r.phase,
-		ActiveModel:    r.model,
-		Thinking:       r.thinking,
-		SessionID:      r.sessionID,
-		TurnNumber:     r.turn,
-		TranscriptLen:  len(r.transcript),
+	return AgentState{
+		Phase:            r.phase,
+		ActiveModel:      r.model,
+		Thinking:         r.thinking,
+		SessionID:        r.sessionID,
+		TurnNumber:       r.turn,
+		TranscriptLen:    len(r.transcript),
 		PendingToolCalls: pending,
-		StartedAt:      r.startedAt,
-		LastActivityAt: r.lastActivityAt,
+		StartedAt:        r.startedAt,
+		LastActivityAt:   r.lastActivityAt,
 	}
 }
 
-// Transcript returns a copy of the current transcript.
-func (r *Run) Transcript() []Message {
+// transcriptCopy returns a copy of the current transcript.
+func (r *promptRun) transcriptCopy() []Message {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Message, len(r.transcript))
@@ -110,14 +105,14 @@ func (r *Run) Transcript() []Message {
 	return out
 }
 
-func (r *Run) setPhase(p RunPhase) {
+func (r *promptRun) setPhase(p AgentPhase) {
 	r.mu.Lock()
 	r.phase = p
 	r.lastActivityAt = time.Now()
 	r.mu.Unlock()
 }
 
-func (r *Run) emit(ev AgentEvent) {
+func (r *promptRun) emit(ev AgentEvent) {
 	r.mu.Lock()
 	r.lastEvent = ev
 	r.lastActivityAt = time.Now()
@@ -129,7 +124,7 @@ func (r *Run) emit(ev AgentEvent) {
 	}
 }
 
-func (r *Run) loadTranscript(ctx context.Context) error {
+func (r *promptRun) loadTranscript(ctx context.Context) error {
 	msgs, err := r.agent.session.Load(ctx, r.sessionID)
 	if err != nil {
 		return err
@@ -145,7 +140,7 @@ func (r *Run) loadTranscript(ctx context.Context) error {
 	return nil
 }
 
-func (r *Run) appendTranscript(ctx context.Context, msgs ...Message) error {
+func (r *promptRun) appendTranscript(ctx context.Context, msgs ...Message) error {
 	if err := r.agent.session.Append(ctx, r.sessionID, msgs...); err != nil {
 		return err
 	}
@@ -160,18 +155,17 @@ type steerMsg struct {
 	injected chan struct{}
 }
 
-// loop is the main run loop.
-func (r *Run) loop(ctx context.Context) {
+// loop is the main prompt loop.
+func (r *promptRun) loop(ctx context.Context) {
 	defer close(r.events)
 	defer close(r.done)
 	defer r.agent.running.Add(-1)
 
 	r.emit(AgentStartEvent{})
 
-	// Load existing transcript
 	if err := r.loadTranscript(ctx); err != nil {
-		r.emit(AgentEndEvent{Messages: r.Transcript()})
-		r.done <- RunResult{Err: fmt.Errorf("loading transcript: %w", err)}
+		r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+		r.done <- PromptResult{Err: fmt.Errorf("loading transcript: %w", err)}
 		return
 	}
 
@@ -183,38 +177,35 @@ func (r *Run) loop(ctx context.Context) {
 		}
 	}
 
-	// Main follow-up loop
 	for {
 		if err := r.runOneTurn(ctx); err != nil {
-			if errors.Is(err, ErrRunStopped) || errors.Is(err, ErrRunCancelled) {
+			if errors.Is(err, ErrAgentStopped) || errors.Is(err, ErrPromptCancelled) {
 				r.setPhase(PhaseShuttingDown)
-				// Wait for tools with shutdown timeout
 				time.After(r.agent.config.ShutdownTimeout)
 				r.setPhase(PhaseDone)
-				r.emit(AgentEndEvent{Messages: r.Transcript()})
-				r.done <- RunResult{Messages: r.Transcript(), Err: err}
+				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
 				return
 			}
 			r.emit(LLMErrorEvent{Error: err, Transient: false})
 			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.Transcript()})
-			r.done <- RunResult{Messages: r.Transcript(), Err: err}
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
 			return
 		}
 
 		if r.terminated {
 			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.Transcript()})
-			r.done <- RunResult{Messages: r.Transcript(), Err: nil}
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
 			return
 		}
 
-		// Check for follow-up messages
 		select {
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
-				r.emit(AgentEndEvent{Messages: r.Transcript()})
-				r.done <- RunResult{Messages: r.Transcript(), Err: err}
+				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
 				return
 			}
 			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
@@ -222,25 +213,24 @@ func (r *Run) loop(ctx context.Context) {
 			continue
 		case <-ctx.Done():
 			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.Transcript()})
-			r.done <- RunResult{Messages: r.Transcript(), Err: context.Cause(ctx)}
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: context.Cause(ctx)}
 			return
 		default:
 			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.Transcript()})
-			r.done <- RunResult{Messages: r.Transcript(), Err: nil}
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
 			return
 		}
 	}
 }
 
 // runOneTurn executes a single LLM → tools → result turn.
-func (r *Run) runOneTurn(ctx context.Context) error {
+func (r *promptRun) runOneTurn(ctx context.Context) error {
 	r.setPhase(PhaseWaitingLLM)
 	r.turn++
 	r.emit(TurnStartEvent{Turn: r.turn})
 
-	// Check for steer messages before LLM call
 	select {
 	case sm := <-r.steerCh:
 		if err := r.appendTranscript(ctx, sm.msg); err != nil {
@@ -254,8 +244,32 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 	default:
 	}
 
-	// Build LLM request from compacted context
-	contextMsgs := BuildLLMContext(r.Transcript(), r.branchSummaries)
+	// Take the turn snapshot from the Agent's current config, overlaid with any
+	// per-prompt overrides. Setters called after this point affect the next
+	// turn, never this one.
+	snap := r.agent.snapshot()
+	modelRef := r.optModel
+	if modelRef == "" {
+		modelRef = snap.model
+	}
+	providerName, modelID, err := parseModelRef(modelRef)
+	if err != nil {
+		return err
+	}
+	provider, err := r.agent.providerByName(providerName)
+	if err != nil {
+		return err
+	}
+	thinking := r.optThinking
+	if thinking == llm.ThinkingOff {
+		thinking = snap.thinkingLevel
+	}
+	r.mu.Lock()
+	r.model = modelID
+	r.thinking = thinking
+	r.mu.Unlock()
+
+	contextMsgs := BuildLLMContext(r.transcriptCopy(), r.branchSummaries)
 	msgs := r.agent.config.ConvertToLLM(contextMsgs)
 	if r.agent.hooks.TransformContext != nil {
 		transformed, err := r.agent.hooks.TransformContext(ctx, TransformContextCtx{Messages: contextMsgs})
@@ -265,8 +279,8 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		msgs = r.agent.config.ConvertToLLM(transformed)
 	}
 
-	tools := make([]llm.ToolDef, len(r.agent.config.Tools))
-	for i, t := range r.agent.config.Tools {
+	tools := make([]llm.ToolDef, len(snap.tools))
+	for i, t := range snap.tools {
 		tools[i] = llm.ToolDef{
 			Name:        t.Name(),
 			Description: t.Description(),
@@ -274,32 +288,30 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		}
 	}
 
-	caps := r.provider.Capabilities(r.model)
-	thinking := r.thinking
+	caps := provider.Capabilities(modelID)
 	if thinking != llm.ThinkingOff && !caps.Thinking {
 		r.emit(ThinkingUnsupportedEvent{
 			Requested: fmt.Sprintf("%v", thinking),
-			Provider:  r.provider.Name(),
-			Model:     r.model,
+			Provider:  provider.Name(),
+			Model:     modelID,
 			Reason:    "model does not support thinking",
 		})
 		thinking = llm.ThinkingOff
 	}
 
 	req := llm.LLMRequest{
-		Model:         r.model,
+		Model:         modelID,
 		Messages:      msgs,
 		Tools:         tools,
 		Thinking:      thinking,
 		ProviderHints: r.providerHints,
 	}
 
-	// Wire provider-call hooks via bridge closures.
 	if r.agent.hooks.BeforeProviderRequest != nil {
 		req.OnBeforeRequest = func(headers map[string]string) error {
 			return r.agent.hooks.BeforeProviderRequest(ctx, BeforeProviderRequestCtx{
-				Provider: r.provider.Name(),
-				Model:    r.model,
+				Provider: provider.Name(),
+				Model:    modelID,
 				Headers:  headers,
 			})
 		}
@@ -307,17 +319,16 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 	if r.agent.hooks.AfterProviderResponse != nil {
 		req.OnAfterResponse = func(statusCode int, headers map[string]string) {
 			r.agent.hooks.AfterProviderResponse(ctx, AfterProviderResponseCtx{
-				Provider:   r.provider.Name(),
-				Model:      r.model,
+				Provider:   provider.Name(),
+				Model:      modelID,
 				StatusCode: statusCode,
 				Headers:    headers,
 			})
 		}
 	}
 
-	stream := r.provider.Stream(ctx, req)
+	stream := provider.Stream(ctx, req)
 
-	// Consume stream
 	var toolCalls []llm.ToolCallContent
 	var assistantText strings.Builder
 	var messageStarted bool
@@ -358,14 +369,13 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 				Provider:   e.Provider,
 				Model:      e.Model,
 				Attempt:    e.Attempt,
-				NextDelay:   int64(e.NextDelay / time.Millisecond),
+				NextDelay:  int64(e.NextDelay / time.Millisecond),
 				Reason:     e.Reason,
 				ServerHint: e.ServerHint,
 			})
 		case llm.UsageEvent:
 			// Track usage if needed
 		case llm.MessageEndEvent:
-			// End of assistant message — surface the completed message
 			if assistantText.Len() > 0 {
 				assistantMsg = NewText("assistant", assistantText.String())
 			}
@@ -378,7 +388,6 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 		return fmt.Errorf("llm stream: %w", result.Err)
 	}
 
-	// Append assistant response to transcript
 	if assistantText.Len() > 0 {
 		assistantMsg = NewText("assistant", assistantText.String())
 		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
@@ -394,22 +403,19 @@ func (r *Run) runOneTurn(ctx context.Context) error {
 
 	r.emit(TurnEndEvent{Turn: r.turn})
 
-	// Execute tools if any
 	if len(toolCalls) > 0 {
-		if err := r.executeTools(ctx, toolCalls); err != nil {
+		if err := r.executeTools(ctx, toolCalls, snap.tools); err != nil {
 			return err
 		}
-		// After tools, loop for next LLM turn
 		return nil
 	}
 
 	return nil
 }
 
-func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent) error {
+func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent, tools []RegisteredTool) error {
 	r.setPhase(PhaseExecutingTools)
 
-	// Check for steer messages before tool execution
 	select {
 	case sm := <-r.steerCh:
 		if err := r.appendTranscript(ctx, sm.msg); err != nil {
@@ -445,7 +451,7 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 				defer func() { <-sema }()
 			}
 
-			tool, ok := r.findTool(call.ToolName)
+			tool, ok := findTool(tools, call.ToolName)
 			if !ok {
 				results[idx] = struct {
 					callID string
@@ -494,7 +500,6 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 
 	wg.Wait()
 
-	// Check all-terminate semantics
 	if len(results) > 0 {
 		allTerminate := true
 		for _, res := range results {
@@ -511,7 +516,6 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 		}
 	}
 
-	// Append tool results to transcript in call-ID order
 	for _, res := range results {
 		msg := NewToolResult("tool", res.callID, res.name, res.result.Content, res.result.Data, res.result.IsError)
 		if err := r.appendTranscript(ctx, msg); err != nil {
@@ -522,8 +526,8 @@ func (r *Run) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent)
 	return nil
 }
 
-func (r *Run) findTool(name string) (RegisteredTool, bool) {
-	for _, t := range r.agent.config.Tools {
+func findTool(tools []RegisteredTool, name string) (RegisteredTool, bool) {
+	for _, t := range tools {
 		if t.Name() == name {
 			return t, true
 		}

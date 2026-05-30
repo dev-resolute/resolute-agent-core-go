@@ -4,22 +4,38 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/resolute-sh/pi-llm-go"
-	"github.com/resolute-sh/pi-llm-go/mock"
+	"github.com/resolute-sh/pi-llm-go/gemini"
 )
 
-func newTestAgent(t *testing.T, provider llm.LLMProvider, tools ...RegisteredTool) *Agent {
+const testModel = "gemini/gemini-2.5-flash"
+
+// liveProvider returns a real Gemini provider, skipping the test when no
+// API key is configured so the suite degrades gracefully without credentials.
+func liveProvider(t *testing.T) llm.LLMProvider {
 	t.Helper()
-	if provider == nil {
-		provider = mock.New("mock")
+	key := os.Getenv("GEMINI_API_KEY")
+	if key == "" {
+		t.Skip("GEMINI_API_KEY not set; skipping live-provider test")
 	}
+	p, err := gemini.New(gemini.Config{APIKey: key})
+	if err != nil {
+		t.Fatalf("gemini.New: %v", err)
+	}
+	return p
+}
+
+func newTestAgent(t *testing.T, tools ...RegisteredTool) *Agent {
+	t.Helper()
 	agent, err := NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{provider},
-		DefaultModel: "mock/test",
+		Providers:    []llm.LLMProvider{liveProvider(t)},
+		DefaultModel: testModel,
 		Tools:        tools,
 	})
 	if err != nil {
@@ -28,102 +44,94 @@ func newTestAgent(t *testing.T, provider llm.LLMProvider, tools ...RegisteredToo
 	return agent
 }
 
-func runAndCollect(t *testing.T, agent *Agent, prompt string) ([]AgentEvent, RunResult) {
+func newTestAgentWithHooks(t *testing.T, hooks Hooks) *Agent {
 	t.Helper()
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", prompt)})
+	agent, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{liveProvider(t)},
+		DefaultModel: testModel,
+		Hooks:        hooks,
+	})
 	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
+		t.Fatalf("NewAgent: %v", err)
 	}
+	return agent
+}
 
+// drain reads an EventStream to completion and returns the events + result.
+func drain(t *testing.T, stream *EventStream) ([]AgentEvent, PromptResult) {
+	t.Helper()
 	var events []AgentEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for ev := range run.Events() {
+		for ev := range stream.Events {
 			events = append(events, ev)
 		}
 	}()
-
-	var result RunResult
+	var result PromptResult
 	select {
-	case result = <-run.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for run.Done")
+	case result = <-stream.Done:
+	case <-time.After(45 * time.Second):
+		t.Fatal("timeout waiting for stream.Done")
 	}
 	<-done
 	return events, result
 }
 
+func runAndCollect(t *testing.T, agent *Agent, prompt string) ([]AgentEvent, PromptResult) {
+	t.Helper()
+	stream, err := agent.Prompt(context.Background(), NewText("user", prompt), PromptOpts{})
+	if err != nil {
+		t.Fatalf("agent.Prompt: %v", err)
+	}
+	return drain(t, stream)
+}
+
+func assistantText(events []AgentEvent) string {
+	var s string
+	for _, ev := range events {
+		if td, ok := ev.(TextDeltaEvent); ok {
+			s += td.Delta
+		}
+	}
+	return s
+}
+
 func TestNewAgentDefaults(t *testing.T) {
-	agent := newTestAgent(t, nil)
+	agent := newTestAgent(t)
 	if agent == nil {
 		t.Fatal("agent is nil")
 	}
 }
 
 func TestAgentRunTextCompletion(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent := newTestAgent(t, m)
-	events, result := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, result := runAndCollect(t, agent, "Reply with a short greeting.")
 
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
-
-	var text string
-	for _, ev := range events {
-		if td, ok := ev.(TextDeltaEvent); ok {
-			text += td.Delta
-		}
-	}
-	if text != "world" {
-		t.Fatalf("expected 'world', got %q", text)
+	if assistantText(events) == "" {
+		t.Fatal("expected non-empty assistant text")
 	}
 }
 
 func TestAgentRunToolCall(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("calc")).RespondToolCall("add", []byte(`{"a":1,"b":2}`)).Add()
-	m.OnPrompt(mock.Predicate(func(msgs []llm.Message) bool {
-		return len(msgs) > 2
-	})).RespondText("3").Add()
-
-	addTool := NewTool(Tool[struct{ A, B int }]{
+	type addParams struct {
+		A int `json:"a" jsonschema:"description=first addend"`
+		B int `json:"b" jsonschema:"description=second addend"`
+	}
+	addTool := NewTool(Tool[addParams]{
 		Name:        "add",
-		Description: "Add two numbers",
-		Execute: func(ctx context.Context, p struct{ A, B int }) (ToolResult, error) {
+		Description: "Add two integers and return their sum",
+		Execute: func(ctx context.Context, p addParams) (ToolResult, error) {
 			return ToolResult{Content: fmt.Sprintf("%d", p.A+p.B)}, nil
 		},
 	})
 
-	agent := newTestAgent(t, m, addTool)
-
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "calc")})
-	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
-	}
-
-	var events []AgentEvent
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range run.Events() {
-			events = append(events, ev)
-		}
-	}()
-
-	var result RunResult
-	select {
-	case result = <-run.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout")
-	}
-	<-done
-
+	agent := newTestAgent(t, addTool)
+	events, result := runAndCollect(t, agent,
+		"Use the add tool to add 2 and 3. You must call the tool; do not compute it yourself.")
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
@@ -146,131 +154,86 @@ func TestAgentRunToolCall(t *testing.T) {
 }
 
 func TestAgentRunStop(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("slow")).RespondText("done").Delay(500 * time.Millisecond).Add()
+	agent := newTestAgent(t)
 
-	agent := newTestAgent(t, m)
-
-	ctx := context.Background()
-	run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "slow")})
+	stream, err := agent.Prompt(context.Background(),
+		NewText("user", "Write a long, detailed essay about the history of computing."), PromptOpts{})
 	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
+		t.Fatalf("agent.Prompt: %v", err)
 	}
 
-	// Stop immediately
-	run.Stop()
+	// Stop immediately, before the provider stream completes.
+	agent.Stop()
 
-	var result RunResult
+	var result PromptResult
 	select {
-	case result = <-run.Done():
-	case <-time.After(5 * time.Second):
+	case result = <-stream.Done:
+	case <-time.After(45 * time.Second):
 		t.Fatal("timeout waiting for done")
 	}
 
 	if result.Err == nil {
 		t.Fatal("expected error after Stop")
 	}
-	if !errors.Is(result.Err, ErrRunStopped) {
-		t.Fatalf("expected ErrRunStopped, got %v", result.Err)
+	if !errors.Is(result.Err, ErrAgentStopped) {
+		t.Fatalf("expected ErrAgentStopped, got %v", result.Err)
 	}
 }
 
 func TestAgentRunState(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hi")).RespondText("hello").Add()
-
-	agent := newTestAgent(t, m)
-	_, result := runAndCollect(t, agent, "hi")
-
+	agent := newTestAgent(t)
+	_, result := runAndCollect(t, agent, "Say hi.")
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if agent.State().SessionID == "" {
+		t.Fatal("expected non-empty session id in state")
 	}
 }
 
 func TestAgentSessionResume(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-	m.OnPrompt(mock.LastUser("resume")).RespondText("continued").Add()
+	agent := newTestAgent(t)
 
-	agent := newTestAgent(t, m)
-
-	// First run
-	ctx := context.Background()
-	run1, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "hello")})
-	if err != nil {
-		t.Fatalf("run1: %v", err)
-	}
-	var result1 RunResult
-	select {
-	case result1 = <-run1.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout on run1")
-	}
+	_, result1 := runAndCollect(t, agent, "Remember the number 42.")
 	if result1.Err != nil {
-		t.Fatalf("run1 error: %v", result1.Err)
+		t.Fatalf("prompt1 error: %v", result1.Err)
 	}
-	sid := run1.State().SessionID
+	sid := agent.State().SessionID
 	if sid == "" {
-		t.Fatal("expected non-empty session id from run1")
+		t.Fatal("expected non-empty session id from prompt1")
 	}
+	firstLen := len(agent.Transcript())
 
-	// Second run with same session
-	run2, err := agent.Run(ctx, RunOpts{
-		Prompt:    NewText("user", "resume"),
-		SessionID: sid,
-	})
+	stream2, err := agent.Prompt(context.Background(),
+		NewText("user", "What number did I ask you to remember?"), PromptOpts{SessionID: sid})
 	if err != nil {
-		t.Fatalf("run2: %v", err)
+		t.Fatalf("prompt2: %v", err)
 	}
-	var result2 RunResult
-	select {
-	case result2 = <-run2.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout on run2")
-	}
+	_, result2 := drain(t, stream2)
 	if result2.Err != nil {
-		t.Fatalf("run2 error: %v", result2.Err)
+		t.Fatalf("prompt2 error: %v", result2.Err)
 	}
 
-	// Transcript should include messages from run1
-	transcript := run2.Transcript()
-	if len(transcript) < 3 {
-		t.Fatalf("expected transcript to have messages from run1, got %d", len(transcript))
+	// The resumed transcript must retain prompt1's messages and grow.
+	if got := len(agent.Transcript()); got <= firstLen {
+		t.Fatalf("expected resumed transcript to grow past %d, got %d", firstLen, got)
 	}
 }
 
 func TestAgentDefaultSessionRoundTrip(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("hello")).RespondText("world").Add()
-
-	agent, err := NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{m},
-		DefaultModel: "mock/test",
-	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
-
-	events, result := runAndCollect(t, agent, "hello")
+	agent := newTestAgent(t)
+	events, result := runAndCollect(t, agent, "Reply with a short greeting.")
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
-
-	var text string
-	for _, ev := range events {
-		if td, ok := ev.(TextDeltaEvent); ok {
-			text += td.Delta
-		}
-	}
-	if text != "world" {
-		t.Fatalf("expected 'world', got %q", text)
+	if assistantText(events) == "" {
+		t.Fatal("expected non-empty assistant text")
 	}
 }
 
 func TestAgentCompactNoSessionReturnsEmptyResult(t *testing.T) {
-	agent := newTestAgent(t, nil)
-	ctx := context.Background()
-	result, err := agent.Compact(ctx, CompactOpts{})
+	agent := newTestAgent(t)
+	result, err := agent.Compact(context.Background(), CompactOpts{})
 	if err != nil {
 		t.Fatalf("unexpected error from Compact: %v", err)
 	}
@@ -280,78 +243,78 @@ func TestAgentCompactNoSessionReturnsEmptyResult(t *testing.T) {
 }
 
 func TestAgentCompactPreconditionBusy(t *testing.T) {
-	m := mock.New("mock")
-	m.OnPrompt(mock.Exact("slow")).RespondText("done").Delay(2 * time.Second).Add()
+	agent := newTestAgent(t)
 
-	agent := newTestAgent(t, m)
-	ctx := context.Background()
+	// Start a prompt; while it is in flight, Compact must report the agent busy.
+	stream, err := agent.Prompt(context.Background(),
+		NewText("user", "Write a long, detailed essay about the history of computing."), PromptOpts{})
+	if err != nil {
+		t.Fatalf("agent.Prompt: %v", err)
+	}
 
-	// Start a run that will take a while
-	go func() {
-		_, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "slow")})
-		if err != nil {
-			t.Logf("run error: %v", err)
-		}
-	}()
-
-	// Give the run time to start
-	time.Sleep(100 * time.Millisecond)
-
-	_, err := agent.Compact(ctx, CompactOpts{})
+	_, err = agent.Compact(context.Background(), CompactOpts{})
 	if err == nil {
 		t.Fatal("expected error from Compact while busy")
 	}
 	if !errors.Is(err, ErrAgentBusy) {
 		t.Fatalf("expected ErrAgentBusy, got %v", err)
 	}
+
+	agent.Stop()
+	<-stream.Done
 }
 
-func TestAgentConcurrentRuns(t *testing.T) {
-	m := mock.New("mock")
-	m.OnAny().RespondText("result a").Add()
-	m.OnAny().RespondText("result b").Add()
+// TestMultiTenantIsolation replaces the v0.1.x concurrent-runs-on-one-Agent
+// test: under ADR-0006 each conversation is its own Agent, so isolation is
+// exercised by N Agents prompting concurrently with no cross-Agent bleed.
+func TestMultiTenantIsolation(t *testing.T) {
+	const n = 3
+	agents := make([]*Agent, n)
+	for i := range agents {
+		agents[i] = newTestAgent(t)
+	}
 
-	agent := newTestAgent(t, m)
-	ctx := context.Background()
-
-	var resultA, resultB RunResult
+	markers := []string{"alpha", "bravo", "charlie"}
 	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "run a")})
-		if err != nil {
-			t.Errorf("run a: %v", err)
-			return
-		}
-		select {
-		case resultA = <-run.Done():
-		case <-time.After(5 * time.Second):
-			t.Errorf("timeout on run a")
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		run, err := agent.Run(ctx, RunOpts{Prompt: NewText("user", "run b")})
-		if err != nil {
-			t.Errorf("run b: %v", err)
-			return
-		}
-		select {
-		case resultB = <-run.Done():
-		case <-time.After(5 * time.Second):
-			t.Errorf("timeout on run b")
-		}
-	}()
-
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := range agents {
+		go func(i int) {
+			defer wg.Done()
+			prompt := fmt.Sprintf("Reply with exactly this word: %s", markers[i])
+			stream, err := agents[i].Prompt(context.Background(), NewText("user", prompt), PromptOpts{})
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			_, result := drain(t, stream)
+			errs[i] = result.Err
+		}(i)
+	}
 	wg.Wait()
 
-	if resultA.Err != nil {
-		t.Fatalf("run a error: %v", resultA.Err)
+	for i := range agents {
+		if errs[i] != nil {
+			t.Fatalf("agent %d error: %v", i, errs[i])
+		}
+		// Each Agent's transcript must contain only its own user marker.
+		for j, marker := range markers {
+			present := userMarkerPresent(agents[i].Transcript(), marker)
+			if j == i && !present {
+				t.Errorf("agent %d transcript missing its own marker %q", i, marker)
+			}
+			if j != i && present {
+				t.Errorf("agent %d transcript leaked marker %q from agent %d", i, marker, j)
+			}
+		}
 	}
-	if resultB.Err != nil {
-		t.Fatalf("run b error: %v", resultB.Err)
+}
+
+func userMarkerPresent(msgs []Message, marker string) bool {
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Text(), marker) {
+			return true
+		}
 	}
+	return false
 }

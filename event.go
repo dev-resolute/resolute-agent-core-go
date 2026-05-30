@@ -97,10 +97,10 @@ func (LLMRetryEvent) isAgentEvent() {}
 
 // ThinkingUnsupportedEvent signals that thinking was requested but unsupported.
 type ThinkingUnsupportedEvent struct {
-	Requested   string
-	Provider    string
-	Model       string
-	Reason      string
+	Requested string
+	Provider  string
+	Model     string
+	Reason    string
 }
 
 func (ThinkingUnsupportedEvent) isAgentEvent() {}

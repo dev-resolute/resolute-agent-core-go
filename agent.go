@@ -18,8 +18,18 @@ type Agent struct {
 	hooks   Hooks
 
 	running atomic.Int32
-	mu      sync.Mutex
+	mu      sync.RWMutex
 
+	// Mutable runtime config, guarded by mu. Seeded from AgentConfig and
+	// changed thereafter via the setters; each turn snapshot picks up the
+	// current values (see snapshot.go).
+	model         string
+	tools         []RegisteredTool
+	systemPrompt  string
+	thinkingLevel llm.ThinkingLevel
+	skills        []Skill
+
+	current       *promptRun
 	lastSessionID SessionID
 }
 
@@ -53,18 +63,39 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 	}
 
 	return &Agent{
-		config:  cfg,
-		session: s,
-		hooks:   cfg.Hooks,
+		config:        cfg,
+		session:       s,
+		hooks:         cfg.Hooks,
+		model:         cfg.DefaultModel,
+		tools:         cfg.Tools,
+		systemPrompt:  cfg.SystemPrompt,
+		thinkingLevel: cfg.DefaultThinking,
 	}, nil
 }
 
-// Run initiates a new agent run.
-func (a *Agent) Run(ctx context.Context, opts RunOpts) (*Run, error) {
-	// Resolve model and provider
+// Prompt starts a new prompt and returns its EventStream. The user message is
+// the second argument; per-prompt overrides are carried on opts.
+func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*EventStream, error) {
+	// Single-runner guard: at most one prompt in flight per Agent. Release the
+	// slot on any error path before the loop goroutine takes ownership of it.
+	if !a.running.CompareAndSwap(0, 1) {
+		return nil, ErrAgentBusy
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			a.running.Store(0)
+		}
+	}()
+
+	// Resolve the effective model from the current snapshot, overlaid with any
+	// per-prompt override. The snapshot is re-taken each turn in the loop so
+	// setters take effect on the next turn; this resolution validates upfront.
+	snap := a.snapshot()
+
 	modelRef := opts.Model
 	if modelRef == "" {
-		modelRef = a.config.DefaultModel
+		modelRef = snap.model
 	}
 	if modelRef == "" {
 		return nil, fmt.Errorf("no model specified and no default model: %w", ErrInvalidModelRef)
@@ -74,16 +105,8 @@ func (a *Agent) Run(ctx context.Context, opts RunOpts) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var provider llm.LLMProvider
-	for _, p := range a.config.Providers {
-		if p.Name() == providerName {
-			provider = p
-			break
-		}
-	}
-	if provider == nil {
-		return nil, fmt.Errorf("provider %q not found: %w", providerName, ErrInvalidModelRef)
+	if _, err := a.providerByName(providerName); err != nil {
+		return nil, err
 	}
 
 	// Resolve session
@@ -96,7 +119,7 @@ func (a *Agent) Run(ctx context.Context, opts RunOpts) (*Run, error) {
 		// Append system prompt for new session
 		sysPrompt := opts.SystemPrompt
 		if sysPrompt == "" {
-			sysPrompt = a.config.SystemPrompt
+			sysPrompt = snap.systemPrompt
 		}
 		if sysPrompt != "" {
 			if err := a.session.Append(ctx, sid, NewSystem(sysPrompt)); err != nil {
@@ -118,51 +141,124 @@ func (a *Agent) Run(ctx context.Context, opts RunOpts) (*Run, error) {
 	}
 
 	// Append user prompt
-	if err := a.session.Append(ctx, sid, opts.Prompt); err != nil {
+	if err := a.session.Append(ctx, sid, msg); err != nil {
 		return nil, fmt.Errorf("appending user message: %w", err)
 	}
 
-	a.mu.Lock()
-	a.lastSessionID = sid
-	a.mu.Unlock()
-
-	// Create run
 	thinking := opts.Thinking
-	if thinking == llm.ThinkingOff && a.config.DefaultThinking != llm.ThinkingOff {
-		thinking = a.config.DefaultThinking
+	if thinking == llm.ThinkingOff {
+		thinking = snap.thinkingLevel
 	}
 
-	run := &Run{
-		agent:        a,
-		provider:     provider,
-		model:        modelID,
-		thinking:     thinking,
+	pr := &promptRun{
+		agent:         a,
+		optModel:      opts.Model,
+		optThinking:   opts.Thinking,
 		providerHints: opts.ProviderHints,
-		sessionID:    sid,
-		phase:        PhaseIdle,
-		startedAt:    time.Now(),
-		events:       make(chan AgentEvent, a.config.EventBufferSize),
-		done:         make(chan RunResult, 1),
-		steerCh:      make(chan steerMsg, a.config.SteerBufferSize),
-		followUpCh:   make(chan Message, a.config.SteerBufferSize),
+		model:         modelID,
+		thinking:      thinking,
+		sessionID:     sid,
+		phase:         PhaseIdle,
+		startedAt:     time.Now(),
+		events:        make(chan AgentEvent, a.config.EventBufferSize),
+		done:          make(chan PromptResult, 1),
+		steerCh:       make(chan steerMsg, a.config.SteerBufferSize),
+		followUpCh:    make(chan Message, a.config.SteerBufferSize),
 	}
 
 	if a.hooks.BeforeAgentStart != nil {
-		if err := a.hooks.BeforeAgentStart(ctx, BeforeAgentStartCtx{RunOpts: opts}); err != nil {
+		if err := a.hooks.BeforeAgentStart(ctx, BeforeAgentStartCtx{PromptOpts: opts}); err != nil {
 			return nil, fmt.Errorf("before agent start hook: %w", err)
 		}
 	}
 
 	// Set up internal context so Stop() works even before loop() starts.
 	innerCtx, cancel := context.WithCancelCause(ctx)
-	run.cancelMu.Lock()
-	run.cancel = cancel
-	run.cancelMu.Unlock()
+	pr.cancelMu.Lock()
+	pr.cancel = cancel
+	pr.cancelMu.Unlock()
 
-	a.running.Add(1)
-	go run.loop(innerCtx)
+	a.mu.Lock()
+	a.lastSessionID = sid
+	a.current = pr
+	a.mu.Unlock()
 
-	return run, nil
+	launched = true
+	go pr.loop(innerCtx)
+
+	return &EventStream{Events: pr.events, Done: pr.done}, nil
+}
+
+// Stop fire-and-forget cancels the in-flight prompt. Idempotent; a no-op when
+// no prompt is in flight.
+func (a *Agent) Stop() {
+	pr := a.currentPrompt()
+	if pr != nil {
+		pr.stop()
+	}
+}
+
+// Steer enqueues a message for injection into the in-flight prompt at the next
+// safe point.
+func (a *Agent) Steer(ctx context.Context, m Message) error {
+	pr := a.currentPrompt()
+	if pr == nil {
+		return ErrNoPromptInFlight
+	}
+	return pr.steer(ctx, m)
+}
+
+// FollowUp enqueues a message for after the in-flight prompt completes.
+func (a *Agent) FollowUp(ctx context.Context, m Message) error {
+	pr := a.currentPrompt()
+	if pr == nil {
+		return ErrNoPromptInFlight
+	}
+	return pr.followUp(ctx, m)
+}
+
+// State returns a snapshot of the current (or most recent) prompt's state.
+func (a *Agent) State() AgentState {
+	pr := a.currentPrompt()
+	if pr == nil {
+		return AgentState{}
+	}
+	return pr.state()
+}
+
+// Phase returns the current (or most recent) prompt's phase.
+func (a *Agent) Phase() AgentPhase {
+	return a.State().Phase
+}
+
+// Transcript returns a copy of the current (or most recent) prompt's transcript.
+func (a *Agent) Transcript() []Message {
+	pr := a.currentPrompt()
+	if pr == nil {
+		return nil
+	}
+	return pr.transcriptCopy()
+}
+
+// Close stops any in-flight prompt and releases the Agent. Idempotent.
+func (a *Agent) Close() error {
+	a.Stop()
+	return nil
+}
+
+func (a *Agent) currentPrompt() *promptRun {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.current
+}
+
+func (a *Agent) providerByName(name string) (llm.LLMProvider, error) {
+	for _, p := range a.config.Providers {
+		if p.Name() == name {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("provider %q not found: %w", name, ErrInvalidModelRef)
 }
 
 func (a *Agent) isRunning() bool {

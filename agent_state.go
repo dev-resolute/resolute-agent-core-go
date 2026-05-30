@@ -6,11 +6,11 @@ import (
 	"github.com/resolute-sh/pi-llm-go"
 )
 
-// RunPhase describes the current phase of a run.
-type RunPhase int
+// AgentPhase describes the current phase of a run.
+type AgentPhase int
 
 const (
-	PhaseIdle RunPhase = iota
+	PhaseIdle AgentPhase = iota
 	PhaseWaitingLLM
 	PhaseExecutingTools
 	PhaseCompacting
@@ -24,9 +24,9 @@ type PendingToolCall struct {
 	ToolName string
 }
 
-// RunState is a value-type snapshot of a run's current state.
-type RunState struct {
-	Phase            RunPhase
+// AgentState is a value-type snapshot of a run's current state.
+type AgentState struct {
+	Phase            AgentPhase
 	ActiveModel      string
 	Thinking         llm.ThinkingLevel
 	SessionID        SessionID
