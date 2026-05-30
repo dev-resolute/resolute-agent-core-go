@@ -40,7 +40,7 @@ for ev := range run.Events() { ... }
 result := <-run.Done()
 
 // after (v0.2.0)
-stream, err := agent.Prompt(ctx, pi.NewText("user", "hi"))
+stream, err := agent.Prompt(ctx, pi.NewText("user", "hi"), pi.PromptOpts{})
 for ev := range stream.Events { ... }
 result := <-stream.Done
 ```
@@ -69,9 +69,9 @@ ErrRunStopped    → ErrAgentStopped
 ```
 
 `PromptOpts` no longer carries `Prompt` — the message is the second argument to
-`Agent.Prompt(ctx, msg)`. Other former `RunOpts` fields (`SessionID`, `Model`,
-`SystemPrompt`) are set on the Agent before the prompt or via `PromptOpts` where
-still per-call.
+`Agent.Prompt(ctx, msg, opts)`, with `opts PromptOpts` third. Other former
+`RunOpts` fields (`SessionID`, `Model`, `SystemPrompt`) remain on `PromptOpts`
+for per-call overrides, or are set on the Agent via setters before the prompt.
 
 **4. One Agent per conversation, not one Agent shared across requests.**
 
@@ -84,7 +84,7 @@ func handle(r) { run, _ := agent.Run(...) }
 func handle(r) {
     agent, _ := pi.NewAgent(cfg)        // per request/session
     defer agent.Close()
-    stream, _ := agent.Prompt(r.Context(), msg)
+    stream, _ := agent.Prompt(r.Context(), msg, pi.PromptOpts{})
 }
 ```
 

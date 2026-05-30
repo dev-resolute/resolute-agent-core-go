@@ -4,11 +4,17 @@
 
 ### Agent surface
 
-**Agent**: Persistent, configurable object that owns tools, hooks, session backend, default options, and system prompt. Long-lived; can spawn multiple concurrent runs.
+**Agent**: Session-shaped, mutable object that owns tools, hooks, the session backend, and mutable runtime config (model, tools, system prompt, thinking level, skills). One Agent represents one conversation; at most one prompt is in flight at a time. Multi-tenant servers hold N Agents for N sessions. Control methods `Steer`, `FollowUp`, `Stop`, `State`, `Phase`, `Transcript`, `Close` live here (ADR-0006).
 
-**Run**: Handle returned by `Agent.Run(...)`. Represents a single live invocation. Owns `Events` and `Done` channels and control methods (`Steer`, `FollowUp`, `Stop`).
+**Prompt**: `Agent.Prompt(ctx, msg, opts)` — starts an LLM call and returns an `EventStream`. Returns `ErrAgentBusy` when a prompt is already in flight. Replaces v0.1.x `Agent.Run`; the `*Run` handle is dissolved (ADR-0006).
 
-**RunResult**: Terminal value delivered on `Run.Done`. Contains final message transcript and any error.
+**EventStream**: Struct returned by `Agent.Prompt`. Carries an `Events` channel (typed events, closed by the sender on completion) and a `Done` channel (one terminal `PromptResult`).
+
+**PromptResult**: Terminal value delivered on `EventStream.Done`. Contains final message transcript and any error. Renamed from v0.1.x `RunResult`.
+
+**Setters**: `SetModel`/`SetTools`/`SetSystemPrompt`/`SetThinkingLevel`/`SetSkills` mutate the Agent under its mutex; the next turn snapshot picks up the change, never the in-flight turn.
+
+**Turn snapshot**: Immutable copy of the Agent's runtime config taken under a read lock at turn start. Setters during a turn affect the next snapshot, not the one in flight.
 
 ### Messages
 
@@ -26,7 +32,7 @@
 
 ### Events
 
-**AgentEvent**: Sealed interface for events on `Run.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.
+**AgentEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.
 
 ### Hooks
 
@@ -54,7 +60,7 @@
 
 ### Cancellation
 
-**Stop**: `Run.Stop()` — fire-and-forget. Cancels internal context with cause `ErrRunStopped`.
+**Stop**: `Agent.Stop()` — fire-and-forget. Cancels the in-flight prompt's internal context with cause `ErrAgentStopped`.
 
 **ShutdownTimeout**: Bound on waiting for tools to honor cancelled ctx. Default 30s.
 
@@ -62,6 +68,6 @@
 
 ### Concurrency
 
-**Multi-runner Agent**: `Agent.Run` is goroutine-safe. Agent is immutable after `NewAgent`.
+**Single-runner Agent**: One `Agent` corresponds to one session/conversation; at most one prompt in flight at a time. Runtime config is mutable via setters and picked up on the next turn snapshot. Concurrent users get N Agents, not one Agent shared across N runs. Reverses the v0.1.x "Multi-runner Agent" invariant (ADR-0006).
 
-**Goroutine-safety contract**: `Tool.Execute`, hooks, `ConvertToLLM`, and `SessionRepo` implementations must be safe for concurrent invocation.
+**Goroutine-safety contract**: `Tool.Execute`, hooks, `ConvertToLLM`, and `SessionRepo` implementations must be safe for concurrent invocation. Setters on `*Agent` are also concurrent-safe.

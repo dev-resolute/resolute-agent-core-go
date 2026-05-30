@@ -4,12 +4,12 @@ Stateful agent loop for Go, built on `pi-llm-go`.
 
 ## Features
 
-- **Agent + Run model**: Long-lived `Agent` spawns concurrent `*Run`s.
+- **Single-runner mutable Agent**: one `Agent` per conversation; `Agent.Prompt` returns an `EventStream`. Runtime config is mutable via setters and picked up on the next turn (ADR-0006).
 - **Typed tools**: `Tool[P any]` with compile-time parameter checking.
 - **Streaming events**: Sealed `AgentEvent` interface with 16+ variants.
 - **Session persistence**: `MemorySession` (default) or `JSONLSession` (disk).
-- **Compaction**: Manual transcript summarization (v0.1.0).
-- **Steering + follow-up**: Inject messages mid-run or after completion.
+- **Compaction**: Manual transcript summarization.
+- **Steering + follow-up**: Inject messages mid-prompt or after completion.
 - **Cancellation**: Bounded shutdown with `ToolLeakEvent` observability.
 
 ## Install
@@ -27,26 +27,24 @@ agent, _ := pi.NewAgent(pi.AgentConfig{
     Tools:        []pi.RegisteredTool{myTool},
 })
 
-run, _ := agent.Run(ctx, pi.RunOpts{
-    Prompt: pi.NewText("user", "Hello"),
-})
+stream, _ := agent.Prompt(ctx, pi.NewText("user", "Hello"), pi.PromptOpts{})
 
-for ev := range run.Events() {
+for ev := range stream.Events {
     // type-switch on pi.AgentEvent
 }
-result := <-run.Done()
+result := <-stream.Done
+
+// Reconfigure mid-conversation; takes effect on the next prompt's turn.
+agent.SetModel("gemini/gemini-2.5-flash")
 ```
 
 ## Testing
 
-Unit tests pass without secrets:
+Provider-backed tests run against a live Gemini provider and skip when
+`GEMINI_API_KEY` is unset; pure-logic tests (turn snapshot, compaction,
+schema) run without it.
 ```bash
-go test ./...
-```
-
-Integration tests (require API keys):
-```bash
-go test -tags=integration ./...
+GEMINI_API_KEY=... go test -race ./...
 ```
 
 ## License
