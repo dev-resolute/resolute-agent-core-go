@@ -69,6 +69,32 @@ func TestSkillsAutoRenderAndHotReload(t *testing.T) {
 	}
 }
 
+// TestSkillsFromConfig verifies that AgentConfig.Skills seeds the initial skill
+// set so turn-1 system prompt carries the index without a SetSkills call.
+func TestSkillsFromConfig(t *testing.T) {
+	provider := newRecordingProvider("test")
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		SystemPrompt: "base prompt",
+		Skills: []Skill{
+			{Name: "startup-skill", Description: "available from config", FilePath: "/s/startup/SKILL.md"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	runOnePrompt(t, a)
+	sys := systemText(t, provider.capturedReq())
+	if !strings.Contains(sys, "<available_skills>") {
+		t.Errorf("turn 1 system prompt missing skills index: %q", sys)
+	}
+	if !strings.Contains(sys, "<name>startup-skill</name>") {
+		t.Errorf("turn 1 system prompt missing startup-skill: %q", sys)
+	}
+}
+
 // TestSkillsNotPersistedToTranscript verifies the rendered index is derived
 // per-turn and never written into the session transcript.
 func TestSkillsNotPersistedToTranscript(t *testing.T) {

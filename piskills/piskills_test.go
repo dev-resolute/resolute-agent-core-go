@@ -164,6 +164,47 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			name: "quoted \"true\" is string not bool — does not disable model invocation",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "quoted-bool", "SKILL.md"),
+					"---\nname: quoted-bool\ndescription: a skill\ndisable-model-invocation: \"true\"\n---\nbody")
+			},
+			check: func(t *testing.T, root string, skills []pi.Skill, diags []Diagnostic, err error) {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				if len(diags) != 0 {
+					t.Errorf("unexpected diagnostics: %v", diags)
+				}
+				s, ok := findSkill(skills, "quoted-bool")
+				if !ok {
+					t.Fatalf("skill not loaded; got %v", skills)
+				}
+				if s.DisableModelInvocation {
+					t.Errorf(`quoted "true" should not disable model invocation`)
+				}
+			},
+		},
+		{
+			name: "unquoted false does not disable model invocation",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "explicit-false", "SKILL.md"),
+					"---\nname: explicit-false\ndescription: a skill\ndisable-model-invocation: false\n---\nbody")
+			},
+			check: func(t *testing.T, root string, skills []pi.Skill, diags []Diagnostic, err error) {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				s, ok := findSkill(skills, "explicit-false")
+				if !ok {
+					t.Fatalf("skill not loaded; got %v", skills)
+				}
+				if s.DisableModelInvocation {
+					t.Errorf("unquoted false should not disable model invocation")
+				}
+			},
+		},
+		{
 			name:  "missing directory returns empty without error",
 			setup: func(t *testing.T, root string) {},
 			check: func(t *testing.T, root string, skills []pi.Skill, diags []Diagnostic, err error) {

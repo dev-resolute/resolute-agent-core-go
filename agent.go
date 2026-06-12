@@ -93,6 +93,7 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		systemPrompt:    cfg.SystemPrompt,
 		thinkingLevel:   cfg.DefaultThinking,
 		thinkingBudgets: maps.Clone(cfg.ThinkingBudgets),
+		skills:          slices.Clone(cfg.Skills),
 	}, nil
 }
 

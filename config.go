@@ -38,6 +38,8 @@ type AgentConfig struct {
 	// Transport is the preferred stream transport forwarded to every LLMRequest.
 	// Zero value behaves as TransportAuto.
 	Transport llm.TransportPreference
+	// Skills is the initial skill set offered to the model; hot-reload via SetSkills.
+	Skills []Skill
 }
 
 // ConvertToLLMFn transforms agent-side Messages into LLM-shaped messages.

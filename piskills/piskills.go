@@ -156,21 +156,22 @@ func loadSkillFile(path string) (*pi.Skill, []Diagnostic) {
 	}
 
 	frontmatter, body := parseFrontmatter(string(data))
-	if frontmatter["description"] == "" {
+	description := unquote(frontmatter["description"])
+	if description == "" {
 		return nil, []Diagnostic{{Path: path, Message: "description is required"}}
 	}
 
-	name := frontmatter["name"]
+	name := unquote(frontmatter["name"])
 	if name == "" {
 		name = filepath.Base(filepath.Dir(path))
 	}
 
 	return &pi.Skill{
 		Name:                   name,
-		Description:            frontmatter["description"],
+		Description:            description,
 		Content:                body,
 		FilePath:               path,
-		DisableModelInvocation: strings.EqualFold(frontmatter["disable-model-invocation"], "true"),
+		DisableModelInvocation: parseBoolFrontmatter(frontmatter["disable-model-invocation"]),
 	}, nil
 }
 
@@ -208,8 +209,14 @@ func parseFrontmatterLine(line string) (key, value string, ok bool) {
 		return "", "", false
 	}
 	key = strings.TrimSpace(trimmed[:idx])
-	value = unquote(strings.TrimSpace(trimmed[idx+1:]))
+	value = strings.TrimSpace(trimmed[idx+1:])
 	return key, value, true
+}
+
+// parseBoolFrontmatter follows YAML 1.2 core schema: only the unquoted literals
+// true, True, and TRUE are boolean true; quoted values are strings and return false.
+func parseBoolFrontmatter(raw string) bool {
+	return raw == "true" || raw == "True" || raw == "TRUE"
 }
 
 func unquote(s string) string {
