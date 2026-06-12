@@ -6,6 +6,7 @@ import "errors"
 var (
 	ErrPromptCancelled = errors.New("prompt cancelled by caller context")
 	ErrAgentStopped    = errors.New("prompt stopped by caller")
+	// ErrToolLeaked is reserved (ADR-0004); not returned — the leak terminal error is the cancellation cause, ToolLeakEvent is the per-call signal.
 	ErrToolLeaked      = errors.New("tool execution leaked goroutine")
 	ErrToolNotFound    = errors.New("tool not found")
 	ErrCompactFailed   = errors.New("compaction failed")

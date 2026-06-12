@@ -38,6 +38,7 @@ type promptRun struct {
 	lastEvent       AgentEvent
 	terminated      bool
 
+	// send only via emit — raw sends bypass the eventsClosed guard
 	events     chan AgentEvent
 	done       chan PromptResult
 	steerCh    chan steerMsg
@@ -161,6 +162,16 @@ func (r *promptRun) closeEvents() {
 	close(r.events)
 }
 
+// finish sets PhaseDone, emits AgentEndEvent, and delivers PromptResult. It is
+// the single exit helper for all loop() paths; paths that emit a preceding
+// LLMErrorEvent do so before calling finish.
+func (r *promptRun) finish(err error) {
+	r.setPhase(PhaseDone)
+	msgs := r.transcriptCopy()
+	r.emit(AgentEndEvent{Messages: msgs})
+	r.done <- PromptResult{Messages: msgs, Err: err}
+}
+
 func (r *promptRun) loadTranscript(ctx context.Context) error {
 	msgs, err := r.agent.session.Load(ctx, r.sessionID)
 	if err != nil {
@@ -243,8 +254,7 @@ func (r *promptRun) loop(ctx context.Context) {
 	r.emit(AgentStartEvent{})
 
 	if err := r.loadTranscript(ctx); err != nil {
-		r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-		r.done <- PromptResult{Err: fmt.Errorf("loading transcript: %w", err)}
+		r.finish(fmt.Errorf("loading transcript: %w", err))
 		return
 	}
 
@@ -264,22 +274,16 @@ func (r *promptRun) loop(ctx context.Context) {
 				// already honored ShutdownTimeout, so deliver the terminal result
 				// directly. A bare caller-ctx cancellation surfaces as
 				// ErrPromptCancelled with no spurious LLMErrorEvent.
-				r.setPhase(PhaseDone)
-				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
+				r.finish(cause)
 				return
 			}
 			r.emit(LLMErrorEvent{Error: err, Transient: false})
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+			r.finish(err)
 			return
 		}
 
 		if err := r.flushPendingActiveTools(ctx); err != nil {
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+			r.finish(err)
 			return
 		}
 
@@ -296,16 +300,12 @@ func (r *promptRun) loop(ctx context.Context) {
 		}
 
 		if r.terminated {
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
+			r.finish(nil)
 			return
 		}
 
 		if stopAfterTurn {
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
+			r.finish(nil)
 			return
 		}
 
@@ -316,8 +316,7 @@ func (r *promptRun) loop(ctx context.Context) {
 		select {
 		case sm := <-r.steerCh:
 			if err := r.appendTranscript(ctx, sm.msg); err != nil {
-				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+				r.finish(err)
 				return
 			}
 			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
@@ -334,9 +333,7 @@ func (r *promptRun) loop(ctx context.Context) {
 		if hadToolCalls {
 			if ctx.Err() != nil {
 				cause, _ := asCancellation(context.Cause(ctx))
-				r.setPhase(PhaseDone)
-				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
+				r.finish(cause)
 				return
 			}
 			continue
@@ -347,8 +344,7 @@ func (r *promptRun) loop(ctx context.Context) {
 		select {
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
-				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+				r.finish(err)
 				return
 			}
 			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
@@ -356,14 +352,10 @@ func (r *promptRun) loop(ctx context.Context) {
 			continue
 		case <-ctx.Done():
 			cause, _ := asCancellation(context.Cause(ctx))
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
+			r.finish(cause)
 			return
 		default:
-			r.setPhase(PhaseDone)
-			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
+			r.finish(nil)
 			return
 		}
 	}
