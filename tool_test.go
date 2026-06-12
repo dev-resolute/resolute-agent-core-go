@@ -138,8 +138,8 @@ func TestPrepareArgumentsTypedTool(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			tool := NewTool(Tool[CurrentParams]{
-				Name:        "typed",
-				Description: "typed test tool",
+				Name:             "typed",
+				Description:      "typed test tool",
 				PrepareArguments: tt.prepareArgs,
 				Execute: func(_ context.Context, p CurrentParams) (ToolResult, error) {
 					return ToolResult{Content: p.Value}, nil
@@ -364,4 +364,3 @@ func TestPrepareArgumentsDynamicTool(t *testing.T) {
 		})
 	}
 }
-
