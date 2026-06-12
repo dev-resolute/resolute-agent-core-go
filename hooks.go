@@ -19,7 +19,8 @@ type Hooks struct {
 	AfterProviderResponse func(ctx context.Context, c AfterProviderResponseCtx)
 
 	// OnConfigUpdate is called synchronously by each setter (SetModel,
-	// SetThinkingLevel, SetTools, SetSystemPrompt, SetSkills) after the new
+	// SetThinkingLevel, SetTools, SetSystemPrompt, SetSkills, SetActiveTools)
+	// after the new
 	// value is committed, on the setter's calling goroutine, without holding
 	// the Agent's internal mutex. This means the hook may safely call Agent
 	// getters (e.g. State()) without deadlocking. Because the mutex is released
@@ -38,6 +39,7 @@ const (
 	ConfigFieldTools         ConfigField = "tools"
 	ConfigFieldSystemPrompt  ConfigField = "system_prompt"
 	ConfigFieldSkills        ConfigField = "skills"
+	ConfigFieldActiveTools   ConfigField = "active_tools"
 )
 
 // ConfigUpdateCtx is passed to the OnConfigUpdate hook.
@@ -59,6 +61,9 @@ type ConfigUpdateCtx struct {
 
 	OldSkills []Skill
 	NewSkills []Skill
+
+	OldActiveTools []string
+	NewActiveTools []string
 }
 
 // BeforeAgentStartCtx is passed to the BeforeAgentStart hook.

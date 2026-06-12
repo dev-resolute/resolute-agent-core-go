@@ -20,6 +20,7 @@ type AgentConfig struct {
 	DefaultModel     string
 	SystemPrompt     string
 	Tools            []RegisteredTool
+	ActiveToolNames  []string
 	Hooks            Hooks
 	Session          SessionRepo
 	ConvertToLLM     ConvertToLLMFn

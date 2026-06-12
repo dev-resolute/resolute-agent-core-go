@@ -12,7 +12,7 @@
 
 **PromptResult**: Terminal value delivered on `EventStream.Done`. Contains final message transcript and any error. Renamed from v0.1.x `RunResult`.
 
-**Setters**: `SetModel`/`SetTools`/`SetSystemPrompt`/`SetThinkingLevel`/`SetSkills` mutate the Agent under its mutex; the next turn snapshot picks up the change, never the in-flight turn.
+**Setters**: `SetModel`/`SetTools`/`SetSystemPrompt`/`SetThinkingLevel`/`SetSkills`/`SetActiveTools` mutate the Agent under its mutex; the next turn snapshot picks up the change, never the in-flight turn. `SetTools` and `SetActiveTools` return an error and leave the Agent unchanged on invalid input (see Registered vs active tools).
 
 **Turn snapshot**: Immutable copy of the Agent's runtime config taken under a read lock at turn start. Setters during a turn affect the next snapshot, not the one in flight.
 
@@ -30,6 +30,10 @@
 
 **Dynamic tool**: Escape hatch for runtime-schema tools via `NewDynamicTool`.
 
+**Registered vs active tools**: *Registered* tools are every tool on the Agent (`AgentConfig.Tools` / `SetTools`). *Active* tools are the subset offered to the model on a turn (`AgentConfig.ActiveToolNames` / `SetActiveTools`); a nil active set means all registered tools are active. The turn snapshot carries only the active subset, so an inactive tool is never offered to the model nor executed. Registered names must be unique and active names must reference registered tools without duplicates — validated by one shared helper at construction, `SetTools`, and `SetActiveTools` (`ErrDuplicateToolName`, `ErrUnknownActiveTool`).
+
+**active_tools_change**: Bookkeeping transcript `Message` (`Type: "active_tools_change"`, `Body: {"activeToolNames":[...]}`) recording a change to the active set. It is never sent to the model (excluded by `BuildLLMContext` and `DefaultConvertToLLM`) and is never a compaction cut point. On resume, the active set is restored by scanning for the last such entry (absent ⇒ all tools active). When a session is bound, `SetActiveTools` persists immediately (idle) or via a deferral queue flushed at the turn-end safe point (mid-prompt); before the first prompt nothing is written, and the active set is recorded at session-bind time if it differs from the full registered set.
+
 ### Events
 
 **AgentEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.
@@ -42,13 +46,13 @@
 
 ### Session storage
 
-**SessionRepo**: Interface for storage backends. Domain operations: create, append, load, list, append/load branch summaries, delete.
+**SessionRepo**: Interface for storage backends. Domain operations: create, append, append active-tools change, load, list, append/load branch summaries, delete.
 
 **SessionID**: Opaque string type.
 
 **MemorySession**: Default in-process backend.
 
-**JSONLSession**: On-disk JSONL backend, upstream-compatible.
+**JSONLSession**: On-disk session backend. The format is **Go-native, append-only JSONL**: one line per entry, each the Go `Message` codec shape (flat `{"Role","Type","Body"}`). This is **not** wire-compatible with upstream's `{type,id,parentId,timestamp}` tree today; cross-runtime interchange is tracked as future work (a separate issue), not a current guarantee. Session-format migration is explicitly out of scope here.
 
 **BranchSummary**: Compaction artifact replacing a message range with a summary.
 

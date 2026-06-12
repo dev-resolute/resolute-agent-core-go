@@ -23,11 +23,16 @@ type Agent struct {
 	// Mutable runtime config, guarded by mu. Seeded from AgentConfig and
 	// changed thereafter via the setters; each turn snapshot picks up the
 	// current values (see snapshot.go).
-	model         string
-	tools         []RegisteredTool
-	systemPrompt  string
-	thinkingLevel llm.ThinkingLevel
-	skills        []Skill
+	model           string
+	tools           []RegisteredTool
+	activeToolNames []string
+	systemPrompt    string
+	thinkingLevel   llm.ThinkingLevel
+	skills          []Skill
+
+	// pendingActiveTools holds active-tools changes made while a prompt is in
+	// flight; the loop flushes them to the session at the turn-end safe point.
+	pendingActiveTools [][]string
 
 	current       *promptRun
 	lastSessionID SessionID
@@ -57,19 +62,24 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		cfg.ConvertToLLM = DefaultConvertToLLM
 	}
 
+	if err := validateToolConfig(cfg.Tools, cfg.ActiveToolNames); err != nil {
+		return nil, err
+	}
+
 	s := cfg.Session
 	if s == nil {
 		s = newInternalMemorySession()
 	}
 
 	return &Agent{
-		config:        cfg,
-		session:       s,
-		hooks:         cfg.Hooks,
-		model:         cfg.DefaultModel,
-		tools:         cfg.Tools,
-		systemPrompt:  cfg.SystemPrompt,
-		thinkingLevel: cfg.DefaultThinking,
+		config:          cfg,
+		session:         s,
+		hooks:           cfg.Hooks,
+		model:           cfg.DefaultModel,
+		tools:           cfg.Tools,
+		activeToolNames: cfg.ActiveToolNames,
+		systemPrompt:    cfg.SystemPrompt,
+		thinkingLevel:   cfg.DefaultThinking,
 	}, nil
 }
 
@@ -126,10 +136,12 @@ func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*Even
 				return nil, fmt.Errorf("appending system prompt: %w", err)
 			}
 		}
+		if err := a.recordActiveToolsOnCreate(ctx, sid); err != nil {
+			return nil, fmt.Errorf("recording active tools: %w", err)
+		}
 	} else {
-		// Verify session exists
-		_, err := a.session.Load(ctx, sid)
-		if err != nil {
+		// Verify session exists and restore its recorded active-tools set.
+		if err := a.restoreActiveToolsFromSession(ctx, sid); err != nil {
 			return nil, fmt.Errorf("loading session %q: %w", sid, ErrSessionNotFound)
 		}
 		// Optionally override system prompt
@@ -279,6 +291,43 @@ func (a *Agent) overrideSystemPrompt(ctx context.Context, sid SessionID, prompt 
 	return nil
 }
 
+// recordActiveToolsOnCreate persists a single active_tools_change entry when a
+// freshly created session binds and the current active set differs from the full
+// registered set. This preserves resume restoration for active-tools changes made
+// before the first prompt (when no session was bound to persist into).
+func (a *Agent) recordActiveToolsOnCreate(ctx context.Context, sid SessionID) error {
+	a.mu.RLock()
+	differs := a.activeToolNames != nil && !sameStringSet(a.activeToolNames, toolNames(a.tools))
+	var names []string
+	if differs {
+		names = append([]string(nil), a.activeToolNames...)
+	}
+	a.mu.RUnlock()
+	if !differs {
+		return nil
+	}
+	return a.session.AppendActiveToolsChange(ctx, sid, names)
+}
+
+// restoreActiveToolsFromSession resolves the active-tools set from a resumed
+// session by scanning for the last active_tools_change entry; absence means all
+// registered tools are active. It also serves as the session-existence check.
+func (a *Agent) restoreActiveToolsFromSession(ctx context.Context, sid SessionID) error {
+	msgs, err := a.session.Load(ctx, sid)
+	if err != nil {
+		return err
+	}
+	names, found := activeToolNamesFromTranscript(msgs)
+	a.mu.Lock()
+	if found {
+		a.activeToolNames = names
+	} else {
+		a.activeToolNames = nil
+	}
+	a.mu.Unlock()
+	return nil
+}
+
 func parseModelRef(ref string) (providerName, modelID string, err error) {
 	idx := 0
 	for i, c := range ref {
@@ -339,6 +388,8 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 				Role:    msg.Role,
 				Content: llm.TextContent{Text: "<summary>" + msg.Text() + "</summary>"},
 			})
+		case "active_tools_change":
+			// Bookkeeping only; never surfaced to the model.
 		default:
 			// User-defined types: pass through as text for v0.1.0.
 			out = append(out, llm.Message{
@@ -409,6 +460,10 @@ func (m *internalMemorySession) List(ctx context.Context) ([]SessionMeta, error)
 		out = append(out, meta)
 	}
 	return out, nil
+}
+
+func (m *internalMemorySession) AppendActiveToolsChange(ctx context.Context, id SessionID, names []string) error {
+	return m.Append(ctx, id, NewActiveToolsChange(names))
 }
 
 func (m *internalMemorySession) AppendBranchSummary(ctx context.Context, id SessionID, summary BranchSummary) error {

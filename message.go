@@ -56,6 +56,31 @@ func NewBranchSummaryMessage(summary string) Message {
 	return Message{Role: "system", Type: "branch_summary", Body: body}
 }
 
+// NewActiveToolsChange creates an active_tools_change bookkeeping entry recording
+// the set of active tool names (nil means all registered tools are active). It is
+// never sent to the model — DefaultConvertToLLM and BuildLLMContext both exclude
+// it — and is never chosen as a compaction cut point. On resume, the active set
+// is restored by scanning the transcript for the last such entry.
+func NewActiveToolsChange(names []string) Message {
+	body, _ := json.Marshal(map[string][]string{"activeToolNames": names})
+	return Message{Role: "system", Type: "active_tools_change", Body: body}
+}
+
+// ActiveToolNames extracts the recorded active tool names from an
+// active_tools_change message. The second return is false for other types.
+func (m Message) ActiveToolNames() (names []string, ok bool) {
+	if m.Type != "active_tools_change" {
+		return nil, false
+	}
+	var v struct {
+		ActiveToolNames []string `json:"activeToolNames"`
+	}
+	if err := json.Unmarshal(m.Body, &v); err != nil {
+		return nil, false
+	}
+	return v.ActiveToolNames, true
+}
+
 // Text extracts the text from a text-typed or branch_summary message.
 func (m Message) Text() string {
 	if m.Type != "text" && m.Type != "branch_summary" {

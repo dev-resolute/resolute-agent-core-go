@@ -155,6 +155,24 @@ type steerMsg struct {
 	injected chan struct{}
 }
 
+// flushPendingActiveTools drains active-tools changes queued by SetActiveTools
+// during this prompt and appends each as an active_tools_change entry. Routing
+// the append through appendTranscript keeps the session and the in-memory
+// transcript in sync; it runs at the turn-end safe point so the entry lands on a
+// turn boundary rather than mid-stream.
+func (r *promptRun) flushPendingActiveTools(ctx context.Context) error {
+	r.agent.mu.Lock()
+	pending := r.agent.pendingActiveTools
+	r.agent.pendingActiveTools = nil
+	r.agent.mu.Unlock()
+	for _, names := range pending {
+		if err := r.appendTranscript(ctx, NewActiveToolsChange(names)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // loop is the main prompt loop.
 func (r *promptRun) loop(ctx context.Context) {
 	defer close(r.events)
@@ -188,6 +206,13 @@ func (r *promptRun) loop(ctx context.Context) {
 				return
 			}
 			r.emit(LLMErrorEvent{Error: err, Transient: false})
+			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+			return
+		}
+
+		if err := r.flushPendingActiveTools(ctx); err != nil {
 			r.setPhase(PhaseDone)
 			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
 			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}

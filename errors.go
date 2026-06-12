@@ -15,4 +15,6 @@ var (
 	ErrNoPromptInFlight   = errors.New("no prompt in flight")
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrUnsupportedFeature = errors.New("unsupported feature")
+	ErrDuplicateToolName  = errors.New("duplicate tool name")
+	ErrUnknownActiveTool  = errors.New("active tool not registered")
 )

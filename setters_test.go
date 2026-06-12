@@ -37,9 +37,10 @@ func TestOnConfigUpdate_NilHookIsNoop(t *testing.T) {
 	}
 	a.SetModel("test/v2")
 	a.SetThinkingLevel(llm.ThinkingMedium)
-	a.SetTools(nil)
+	_ = a.SetTools(nil)
 	a.SetSystemPrompt("hello")
 	a.SetSkills(nil)
+	_ = a.SetActiveTools(context.Background(), nil)
 }
 
 func TestOnConfigUpdate_Setters(t *testing.T) {
@@ -89,7 +90,7 @@ func TestOnConfigUpdate_Setters(t *testing.T) {
 		},
 		{
 			name: "SetTools",
-			set:  func(a *Agent) { a.SetTools([]RegisteredTool{tool}) },
+			set:  func(a *Agent) { _ = a.SetTools([]RegisteredTool{tool}) },
 			check: func(t *testing.T, c ConfigUpdateCtx) {
 				if c.Field != ConfigFieldTools {
 					t.Errorf("Field = %q, want %q", c.Field, ConfigFieldTools)
@@ -118,8 +119,8 @@ func TestOnConfigUpdate_Setters(t *testing.T) {
 			},
 		},
 		{
-			name:  "SetSkills",
-			set:   func(a *Agent) { a.SetSkills(skills) },
+			name: "SetSkills",
+			set:  func(a *Agent) { a.SetSkills(skills) },
 			check: func(t *testing.T, c ConfigUpdateCtx) {
 				if c.Field != ConfigFieldSkills {
 					t.Errorf("Field = %q, want %q", c.Field, ConfigFieldSkills)
@@ -129,6 +130,21 @@ func TestOnConfigUpdate_Setters(t *testing.T) {
 				}
 				if len(c.NewSkills) != 1 || c.NewSkills[0].Name != "research" {
 					t.Errorf("NewSkills = %v, want 1 skill named research", c.NewSkills)
+				}
+			},
+		},
+		{
+			name: "SetActiveTools",
+			set:  func(a *Agent) { _ = a.SetActiveTools(context.Background(), nil) },
+			check: func(t *testing.T, c ConfigUpdateCtx) {
+				if c.Field != ConfigFieldActiveTools {
+					t.Errorf("Field = %q, want %q", c.Field, ConfigFieldActiveTools)
+				}
+				if len(c.OldActiveTools) != 0 {
+					t.Errorf("OldActiveTools len = %d, want 0", len(c.OldActiveTools))
+				}
+				if len(c.NewActiveTools) != 0 {
+					t.Errorf("NewActiveTools len = %d, want 0", len(c.NewActiveTools))
 				}
 			},
 		},
@@ -195,19 +211,20 @@ func TestOnConfigUpdate_ConcurrentSettersNoRace(t *testing.T) {
 
 	const n = 50
 	var wg sync.WaitGroup
-	wg.Add(n * 5)
+	wg.Add(n * 6)
 	for i := 0; i < n; i++ {
 		go func() { defer wg.Done(); a.SetModel("test/v") }()
 		go func() { defer wg.Done(); a.SetThinkingLevel(llm.ThinkingMedium) }()
-		go func() { defer wg.Done(); a.SetTools(nil) }()
+		go func() { defer wg.Done(); _ = a.SetTools(nil) }()
 		go func() { defer wg.Done(); a.SetSystemPrompt("p") }()
 		go func() { defer wg.Done(); a.SetSkills(nil) }()
+		go func() { defer wg.Done(); _ = a.SetActiveTools(context.Background(), nil) }()
 	}
 	wg.Wait()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if count != n*5 {
-		t.Errorf("expected %d hook calls, got %d", n*5, count)
+	if count != n*6 {
+		t.Errorf("expected %d hook calls, got %d", n*6, count)
 	}
 }

@@ -67,10 +67,12 @@ func EstimateTokens(messages []Message) int {
 }
 
 // BuildLLMContext returns a message slice with BranchSummary messages substituted
-// for the ranges they cover. Summaries are sorted by StartIdx and applied in order.
+// for the ranges they cover. Summaries are sorted by StartIdx and applied in
+// order. Bookkeeping entries (active_tools_change) are stripped — they are state,
+// not conversation, and must never reach the model.
 func BuildLLMContext(transcript []Message, summaries []BranchSummary) []Message {
 	if len(summaries) == 0 {
-		return transcript
+		return excludeBookkeeping(transcript)
 	}
 	// Sort summaries by StartIdx ascending (stable).
 	sorted := make([]BranchSummary, len(summaries))
@@ -102,7 +104,24 @@ func BuildLLMContext(transcript []Message, summaries []BranchSummary) []Message 
 	if lastEnd < len(transcript) {
 		out = append(out, transcript[lastEnd:]...)
 	}
-	return out
+	return excludeBookkeeping(out)
+}
+
+// excludeBookkeeping returns msgs without active_tools_change entries, sharing the
+// backing array when there is nothing to strip.
+func excludeBookkeeping(msgs []Message) []Message {
+	for _, m := range msgs {
+		if m.Type == "active_tools_change" {
+			out := make([]Message, 0, len(msgs))
+			for _, m := range msgs {
+				if m.Type != "active_tools_change" {
+					out = append(out, m)
+				}
+			}
+			return out
+		}
+	}
+	return msgs
 }
 
 // CompactResult carries the outcome of a compaction.
@@ -250,7 +269,7 @@ func estimateMessageTokens(m Message) int {
 }
 
 func isValidCutPoint(m Message) bool {
-	if m.Type == "tool_result" {
+	if m.Type == "tool_result" || m.Type == "active_tools_change" {
 		return false
 	}
 	// tool_call, text, thinking, branch_summary, and user-defined types are valid.

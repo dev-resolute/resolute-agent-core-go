@@ -27,6 +27,7 @@ type BranchSummary struct {
 type SessionRepo interface {
 	Create(ctx context.Context) (SessionID, error)
 	Append(ctx context.Context, id SessionID, msgs ...Message) error
+	AppendActiveToolsChange(ctx context.Context, id SessionID, names []string) error
 	Load(ctx context.Context, id SessionID) ([]Message, error)
 	List(ctx context.Context) ([]SessionMeta, error)
 	AppendBranchSummary(ctx context.Context, id SessionID, summary BranchSummary) error
