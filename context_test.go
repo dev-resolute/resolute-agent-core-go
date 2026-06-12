@@ -286,6 +286,11 @@ func TestContext_CallerCancellationObservable(t *testing.T) {
 		t.Fatal("agent context not done after caller context cancelled")
 	}
 
+	// and the cause is ErrPromptCancelled
+	if cause := context.Cause(agentCtx); !errors.Is(cause, ErrPromptCancelled) {
+		t.Fatalf("context.Cause(agentCtx) = %v, want ErrPromptCancelled", cause)
+	}
+
 	<-stream.Done
 }
 

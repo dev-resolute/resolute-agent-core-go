@@ -66,6 +66,8 @@
 
 **Stop**: `Agent.Stop()` — fire-and-forget. Cancels the in-flight prompt's internal context with cause `ErrAgentStopped`.
 
+**Agent.Context**: `Agent.Context()` — returns the in-flight prompt's context. Cancellation via the caller's `ctx` or `Stop()` is observable through it, making it safe to anchor nested goroutines or sub-operations that must not outlive the prompt. When no prompt is in flight (idle, never started, or after completion), returns a pre-cancelled context with cause `ErrNoPromptInFlight`; any stale work tied to that context exits immediately rather than leaking into the next prompt.
+
 **ShutdownTimeout**: Bound on waiting for tools to honor cancelled ctx. Default 30s.
 
 **ToolLeakEvent**: Emitted when a tool fails to honor cancelled ctx within `ShutdownTimeout`.

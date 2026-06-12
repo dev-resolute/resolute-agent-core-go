@@ -15,7 +15,7 @@ Adopt a Go-idiomatic cancellation model that matches Pi conceptually but takes 5
 
 1. **Caller `ctx` is a first-class cancel trigger** alongside `Agent.Stop()`. Both paths cancel the prompt's internal `context.WithCancelCause`; the cause distinguishes them. (Pi has only `abort()` because JS has no parent-ctx primitive.)
 
-2. **Typed sentinel errors** (`ErrPromptCancelled`, `ErrAgentStopped`, `ErrToolLeaked`, `ErrProviderFatal`) instead of Pi's string `"Operation aborted"`. Required by ERR-2 and ERR-3.
+2. **Typed sentinel errors** (`ErrPromptCancelled`, `ErrAgentStopped`, `ErrToolLeaked`, `ErrProviderFatal`, `ErrNoPromptInFlight`) instead of Pi's string `"Operation aborted"`. Required by ERR-2 and ERR-3.
 
 3. **Explicit session-write drain** before final close. Pi's JS event loop guarantees this implicitly; Go has no such guarantee, and a session write goroutine cancelled mid-flush leaves a corrupt JSONL file.
 
