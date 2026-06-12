@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -267,6 +268,20 @@ func (r *promptRun) loop(ctx context.Context) {
 		}
 
 		select {
+		case sm := <-r.steerCh:
+			// Steering lands only here, at the post-batch seam: the current
+			// turn's tool batch has fully finished. Injecting the message and
+			// continuing drives the next LLM call with the steer in context,
+			// never skipping pending tool calls mid-batch.
+			if err := r.appendTranscript(ctx, sm.msg); err != nil {
+				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+				return
+			}
+			r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
+			r.emit(SteerInjectedEvent{Message: sm.msg})
+			close(sm.injected)
+			continue
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
@@ -297,17 +312,8 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	r.turn++
 	r.emit(TurnStartEvent{Turn: r.turn})
 
-	select {
-	case sm := <-r.steerCh:
-		if err := r.appendTranscript(ctx, sm.msg); err != nil {
-			return false, err
-		}
-		r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
-		r.emit(SteerInjectedEvent{Message: sm.msg})
-		close(sm.injected)
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return false, context.Cause(ctx)
-	default:
 	}
 
 	// Take the turn snapshot from the Agent's current config, overlaid with any
@@ -481,91 +487,86 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	return hadToolCalls, nil
 }
 
+// preparedCall is the outcome of preflighting one tool call. When immediate is
+// true the call is not executed and err carries the per-call failure (unknown
+// tool or BeforeToolCall rejection); otherwise tool and args are ready to run.
+type preparedCall struct {
+	callID    string
+	name      string
+	args      json.RawMessage
+	tool      RegisteredTool
+	immediate bool
+	err       error
+}
+
+// toolOutcome collects one tool call's result. It is indexed by the call's
+// position in the assistant message so results persist in source order
+// regardless of completion order.
+type toolOutcome struct {
+	callID string
+	name   string
+	result ToolResult
+	err    error
+}
+
 func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent, tools []RegisteredTool) error {
 	r.setPhase(PhaseExecutingTools)
-
-	select {
-	case sm := <-r.steerCh:
-		if err := r.appendTranscript(ctx, sm.msg); err != nil {
-			return err
-		}
-		r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
-		r.emit(SteerInjectedEvent{Message: sm.msg})
-		close(sm.injected)
-		return nil // Skip tool execution, go back to LLM
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return context.Cause(ctx)
-	default:
 	}
 
+	// Preflight (sequential, source order): resolve each tool and run its
+	// BeforeToolCall hook. Once the prompt is aborted — e.g. a hook stops it —
+	// stop preparing the remaining siblings; no preflight or work proceeds after
+	// cancellation.
+	preps := make([]preparedCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		if ctx.Err() != nil {
+			break
+		}
+		preps[i] = r.prepareToolCall(ctx, tc, tools)
+	}
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+
+	// Execution (parallel, bounded by MaxParallelTools): runnable calls run
+	// concurrently, each emitting its tool-end event as it finalizes (completion
+	// order). Immediate outcomes are recorded in place.
+	results := make([]toolOutcome, len(toolCalls))
 	var wg sync.WaitGroup
 	sema := make(chan struct{}, r.agent.config.MaxParallelTools)
 	if r.agent.config.MaxParallelTools == 0 {
 		sema = nil // unbounded
 	}
-	results := make([]struct {
-		callID string
-		name   string
-		result ToolResult
-		err    error
-	}, len(toolCalls))
-
-	for i, tc := range toolCalls {
+	for i := range preps {
+		p := preps[i]
+		if p.immediate {
+			results[i] = toolOutcome{callID: p.callID, name: p.name, err: p.err}
+			continue
+		}
 		wg.Add(1)
-		go func(idx int, call llm.ToolCallContent) {
+		go func(idx int, p preparedCall) {
 			defer wg.Done()
 			if sema != nil {
 				sema <- struct{}{}
 				defer func() { <-sema }()
 			}
 
-			tool, ok := findTool(tools, call.ToolName)
-			if !ok {
-				results[idx] = struct {
-					callID string
-					name   string
-					result ToolResult
-					err    error
-				}{callID: call.CallID, name: call.ToolName, err: ErrToolNotFound}
-				r.emit(ToolErrorEvent{CallID: call.CallID, ToolName: call.ToolName, Error: ErrToolNotFound})
-				return
-			}
-
-			if r.agent.hooks.BeforeToolCall != nil {
-				args := call.Args
-				hookCtx := BeforeToolCallCtx{CallID: call.CallID, ToolName: call.ToolName, Args: args}
-				if err := r.agent.hooks.BeforeToolCall(ctx, hookCtx); err != nil {
-					results[idx] = struct {
-						callID string
-						name   string
-						result ToolResult
-						err    error
-					}{callID: call.CallID, name: call.ToolName, err: err}
-					r.emit(ToolErrorEvent{CallID: call.CallID, ToolName: call.ToolName, Error: err})
-					return
-				}
-				call.Args = hookCtx.Args
-			}
-
-			res, err := tool.Execute(ctx, call.CallID, call.Args)
+			res, err := p.tool.Execute(ctx, p.callID, p.args)
 			if err != nil {
 				res = ToolResult{Content: err.Error(), IsError: true}
 			}
-
 			if r.agent.hooks.AfterToolCall != nil {
-				r.agent.hooks.AfterToolCall(ctx, AfterToolCallCtx{CallID: call.CallID, ToolName: call.ToolName, Result: res})
+				if herr := r.agent.hooks.AfterToolCall(ctx, AfterToolCallCtx{CallID: p.callID, ToolName: p.name, Result: res}); herr != nil {
+					res = ToolResult{Content: herr.Error(), IsError: true}
+				}
 			}
 
-			results[idx] = struct {
-				callID string
-				name   string
-				result ToolResult
-				err    error
-			}{callID: call.CallID, name: call.ToolName, result: res}
-			r.emit(ToolCallEndEvent{CallID: call.CallID, ToolName: call.ToolName, Result: res})
-		}(i, tc)
+			results[idx] = toolOutcome{callID: p.callID, name: p.name, result: res}
+			r.emit(ToolCallEndEvent{CallID: p.callID, ToolName: p.name, Result: res})
+		}(i, p)
 	}
-
 	wg.Wait()
 
 	if len(results) > 0 {
@@ -584,14 +585,48 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 		}
 	}
 
+	// Persist tool results in assistant source order. Any per-call error — an
+	// unknown tool, a BeforeToolCall rejection, an execute failure, or an
+	// AfterToolCall failure — lands as an error result carrying the error text,
+	// never an empty success.
 	for _, res := range results {
-		msg := NewToolResult("tool", res.callID, res.name, res.result.Content, res.result.Data, res.result.IsError)
+		content := res.result.Content
+		isErr := res.result.IsError
+		if res.err != nil {
+			content = res.err.Error()
+			isErr = true
+		}
+		msg := NewToolResult("tool", res.callID, res.name, content, res.result.Data, isErr)
 		if err := r.appendTranscript(ctx, msg); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// prepareToolCall resolves a tool call's handler and runs the BeforeToolCall
+// hook. A missing tool or a hook rejection returns an immediate failure (its
+// ToolErrorEvent already emitted); otherwise the returned preparedCall is ready
+// to execute.
+func (r *promptRun) prepareToolCall(ctx context.Context, tc llm.ToolCallContent, tools []RegisteredTool) preparedCall {
+	tool, ok := findTool(tools, tc.ToolName)
+	if !ok {
+		r.emit(ToolErrorEvent{CallID: tc.CallID, ToolName: tc.ToolName, Error: ErrToolNotFound})
+		return preparedCall{callID: tc.CallID, name: tc.ToolName, immediate: true, err: ErrToolNotFound}
+	}
+
+	args := tc.Args
+	if r.agent.hooks.BeforeToolCall != nil {
+		hookCtx := BeforeToolCallCtx{CallID: tc.CallID, ToolName: tc.ToolName, Args: args}
+		if err := r.agent.hooks.BeforeToolCall(ctx, hookCtx); err != nil {
+			r.emit(ToolErrorEvent{CallID: tc.CallID, ToolName: tc.ToolName, Error: err})
+			return preparedCall{callID: tc.CallID, name: tc.ToolName, immediate: true, err: err}
+		}
+		args = hookCtx.Args
+	}
+
+	return preparedCall{callID: tc.CallID, name: tc.ToolName, args: args, tool: tool}
 }
 
 func findTool(tools []RegisteredTool, name string) (RegisteredTool, bool) {
