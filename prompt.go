@@ -475,8 +475,6 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 				Args:     e.Args,
 			})
 			r.emit(ToolCallStartEvent{CallID: e.CallID, ToolName: e.ToolName, Args: e.Args})
-		case llm.ToolCallEndEvent:
-			r.emit(ToolCallEndEvent{CallID: e.CallID})
 		case llm.LLMErrorEvent:
 			if e.Transient {
 				r.emit(LLMErrorEvent{Error: e.Error, Transient: true})

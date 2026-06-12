@@ -175,6 +175,66 @@ func TestToolCallTurnAutoContinues_v076(t *testing.T) {
 	}
 }
 
+// Fix C (v0.76 cleanup): runOneTurn no longer relays the provider's
+// llm.ToolCallEndEvent as an empty agent ToolCallEndEvent. Exactly one
+// ToolCallEndEvent is emitted per call — the real execution-end event carrying
+// ToolName and Result.
+func TestSingleToolCallEndEventPerCall_v076(t *testing.T) {
+	t.Parallel()
+
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			if call == 1 {
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("x")}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.MessageEndEvent{}
+				return
+			}
+			events <- llm.TextDeltaEvent{Delta: "done"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	echo := NewTool(Tool[echoParams]{
+		Name:        "echo",
+		Description: "echo",
+		Execute: func(ctx context.Context, p echoParams) (ToolResult, error) {
+			return ToolResult{Content: "echoed:" + p.Value}, nil
+		},
+	})
+
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{echo},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	events, result := drain(t, stream)
+	if result.Err != nil {
+		t.Fatalf("result.Err = %v, want nil", result.Err)
+	}
+
+	var ends []ToolCallEndEvent
+	for _, ev := range events {
+		if te, ok := ev.(ToolCallEndEvent); ok {
+			ends = append(ends, te)
+		}
+	}
+	if len(ends) != 1 {
+		t.Fatalf("got %d ToolCallEndEvent(s) for one call, want exactly 1: %+v", len(ends), ends)
+	}
+	if e := ends[0]; e.CallID != "c1" || e.ToolName != "echo" || e.Result.Content != "echoed:x" {
+		t.Errorf("ToolCallEndEvent = %+v, want {CallID:c1 ToolName:echo Result.Content:echoed:x}", e)
+	}
+}
+
 // Fix B (v0.76 cancellation parity): a tool that ignores its cancelled ctx must
 // not hang the prompt. On Stop the loop waits up to ShutdownTimeout for the
 // in-flight batch, then unblocks — delivering the terminal result and emitting a
@@ -770,10 +830,9 @@ func TestParallelToolEndCompletionOrderResultsSourceOrder_v076(t *testing.T) {
 	go func() {
 		defer close(collected)
 		for ev := range stream.Events {
-			// runOneTurn relays the provider's llm.ToolCallEndEvent with an empty
-			// ToolName; the execution-end events fix #4 governs carry ToolName and
-			// Result. Filter to the latter.
-			if te, ok := ev.(ToolCallEndEvent); ok && te.ToolName != "" {
+			// Exactly one ToolCallEndEvent is emitted per call (the execution-end
+			// event carrying ToolName and Result).
+			if te, ok := ev.(ToolCallEndEvent); ok {
 				toolEndOrder = append(toolEndOrder, te.CallID)
 				if te.CallID == "c2" {
 					releaseOnce.Do(func() { close(releaseFirst) })
