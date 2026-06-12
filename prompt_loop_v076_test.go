@@ -175,6 +175,206 @@ func TestToolCallTurnAutoContinues_v076(t *testing.T) {
 	}
 }
 
+// Fix B (v0.76 cancellation parity): a tool that ignores its cancelled ctx must
+// not hang the prompt. On Stop the loop waits up to ShutdownTimeout for the
+// in-flight batch, then unblocks — delivering the terminal result and emitting a
+// ToolLeakEvent per still-running call. The leaked goroutine keeps running and
+// must not corrupt the transcript or panic when it finally returns.
+func TestToolLeakOnShutdownTimeout_v076(t *testing.T) {
+	t.Parallel()
+
+	toolStarted := make(chan struct{})
+	release := make(chan struct{})
+	toolReturned := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseTool := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseTool()
+		<-toolReturned
+	})
+
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			events <- llm.ToolCallStartEvent{CallID: "leak-1", ToolName: "hang", Args: echoArgs("x")}
+			events <- llm.ToolCallEndEvent{CallID: "leak-1"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	var startOnce sync.Once
+	hang := NewTool(Tool[echoParams]{
+		Name:        "hang",
+		Description: "ignores ctx",
+		Execute: func(ctx context.Context, p echoParams) (ToolResult, error) {
+			startOnce.Do(func() { close(toolStarted) })
+			<-release // deliberately ignores ctx cancellation
+			close(toolReturned)
+			return ToolResult{Content: "late:" + p.Value}, nil
+		},
+	})
+
+	a, err := NewAgent(AgentConfig{
+		Providers:       []llm.LLMProvider{provider},
+		DefaultModel:    "test/model",
+		Tools:           []RegisteredTool{hang},
+		ShutdownTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	var (
+		mu        sync.Mutex
+		leakEvent *ToolLeakEvent
+	)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for ev := range stream.Events {
+			if le, ok := ev.(ToolLeakEvent); ok {
+				cp := le
+				mu.Lock()
+				leakEvent = &cp
+				mu.Unlock()
+			}
+		}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	start := time.Now()
+	a.Stop()
+
+	var result PromptResult
+	select {
+	case result = <-stream.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done did not deliver after Stop — prompt hung on a ctx-ignoring tool")
+	}
+	elapsed := time.Since(start)
+	<-drained
+
+	if elapsed > 2*time.Second {
+		t.Errorf("Done delivered after %v, want within the shutdown window (~50ms)", elapsed)
+	}
+	if !errors.Is(result.Err, ErrAgentStopped) {
+		t.Errorf("result.Err = %v, want ErrAgentStopped", result.Err)
+	}
+
+	mu.Lock()
+	le := leakEvent
+	mu.Unlock()
+	if le == nil {
+		t.Fatal("no ToolLeakEvent emitted for the ctx-ignoring tool")
+	}
+	if le.ToolName != "hang" || le.CallID != "leak-1" {
+		t.Errorf("ToolLeakEvent = {ToolName:%q CallID:%q}, want {hang leak-1}", le.ToolName, le.CallID)
+	}
+
+	for _, m := range result.Messages {
+		if m.Type != "tool_result" {
+			continue
+		}
+		if _, _, content, _, _, ok := m.ToolResult(); ok && strings.Contains(content, "late:") {
+			t.Errorf("leaked tool result corrupted the transcript: %q", content)
+		}
+	}
+
+	// Release the leaked tool and let it run its post-return code (results write,
+	// guarded emit) so -race exercises the late-write guard.
+	releaseTool()
+	<-toolReturned
+}
+
+// Companion to Fix B: when the tool honors its cancelled ctx promptly, the loop
+// unblocks immediately and emits no ToolLeakEvent.
+func TestToolHonorsCtxEmitsNoLeak_v076(t *testing.T) {
+	t.Parallel()
+
+	toolStarted := make(chan struct{})
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "wait", Args: echoArgs("x")}
+			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	var startOnce sync.Once
+	wait := NewTool(Tool[echoParams]{
+		Name:        "wait",
+		Description: "honors ctx",
+		Execute: func(ctx context.Context, _ echoParams) (ToolResult, error) {
+			startOnce.Do(func() { close(toolStarted) })
+			<-ctx.Done()
+			return ToolResult{}, ctx.Err()
+		},
+	})
+
+	a, err := NewAgent(AgentConfig{
+		Providers:       []llm.LLMProvider{provider},
+		DefaultModel:    "test/model",
+		Tools:           []RegisteredTool{wait},
+		ShutdownTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	var sawLeak atomic.Bool
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for ev := range stream.Events {
+			if _, ok := ev.(ToolLeakEvent); ok {
+				sawLeak.Store(true)
+			}
+		}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	start := time.Now()
+	a.Stop()
+
+	var result PromptResult
+	select {
+	case result = <-stream.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done did not deliver after Stop")
+	}
+	elapsed := time.Since(start)
+	<-drained
+
+	if elapsed > 2*time.Second {
+		t.Errorf("Done delivered after %v; a ctx-honoring tool must not wait out ShutdownTimeout", elapsed)
+	}
+	if sawLeak.Load() {
+		t.Error("ToolLeakEvent emitted though the tool honored ctx promptly")
+	}
+	if !errors.Is(result.Err, ErrAgentStopped) {
+		t.Errorf("result.Err = %v, want ErrAgentStopped", result.Err)
+	}
+}
+
 // Fix #1 (upstream 0.75.4): tool-call preflight stops preparing sibling tool
 // calls once the prompt is aborted. A BeforeToolCall hook aborts the prompt on
 // the first call; the second sibling's preflight must never run and no tool may

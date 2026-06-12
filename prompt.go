@@ -43,6 +43,12 @@ type promptRun struct {
 	steerCh    chan steerMsg
 	followUpCh chan Message
 
+	// emitMu serializes emit and closeEvents so a tool goroutine that leaked
+	// past ShutdownTimeout cannot send on a closed events channel. Once
+	// eventsClosed is set the channel is closed and late emits are dropped.
+	emitMu       sync.Mutex
+	eventsClosed bool
+
 	startedAt      time.Time
 	lastActivityAt time.Time
 
@@ -127,6 +133,13 @@ func (r *promptRun) setPhase(p AgentPhase) {
 }
 
 func (r *promptRun) emit(ev AgentEvent) {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	if r.eventsClosed {
+		// A tool goroutine that outlived the prompt (leaked past ShutdownTimeout)
+		// must not send on the closed events channel.
+		return
+	}
 	r.mu.Lock()
 	r.lastEvent = ev
 	r.lastActivityAt = time.Now()
@@ -136,6 +149,16 @@ func (r *promptRun) emit(ev AgentEvent) {
 	case <-time.After(100 * time.Millisecond):
 		// Drop event if buffer is full to avoid blocking.
 	}
+}
+
+// closeEvents closes the events channel under emitMu so it cannot race a late
+// emit from a leaked tool goroutine. It is the sender side of the channel and
+// must be called exactly once, on loop exit.
+func (r *promptRun) closeEvents() {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	r.eventsClosed = true
+	close(r.events)
 }
 
 func (r *promptRun) loadTranscript(ctx context.Context) error {
@@ -189,7 +212,7 @@ func (r *promptRun) flushPendingActiveTools(ctx context.Context) error {
 
 // loop is the main prompt loop.
 func (r *promptRun) loop(ctx context.Context) {
-	defer close(r.events)
+	defer r.closeEvents()
 	defer close(r.done)
 	// Drain the deferral queue on every loop-exit path (success, error,
 	// cancellation), guaranteeing no entry is stranded or leaked into the next
@@ -220,8 +243,9 @@ func (r *promptRun) loop(ctx context.Context) {
 		hadToolCalls, err := r.runOneTurn(ctx)
 		if err != nil {
 			if errors.Is(err, ErrAgentStopped) || errors.Is(err, ErrPromptCancelled) {
-				r.setPhase(PhaseShuttingDown)
-				time.After(r.agent.config.ShutdownTimeout)
+				// The bounded wait on the in-flight tool batch (executeTools)
+				// already honored ShutdownTimeout, so deliver the terminal result
+				// directly.
 				r.setPhase(PhaseDone)
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
 				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
@@ -529,6 +553,68 @@ type toolOutcome struct {
 	err    error
 }
 
+// toolBatch is the in-flight state of one parallel tool execution, shared
+// between the goroutines that run the tools and awaitToolBatch. completed[i] is
+// set under mu when call i's goroutine finishes, so a cancellation timeout can
+// distinguish honored calls from leaked ones.
+type toolBatch struct {
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	completed []bool
+	preps     []preparedCall
+	startedAt time.Time
+}
+
+// awaitToolBatch waits for the tool batch to finish. On cancellation it grants
+// the in-flight tools ShutdownTimeout to honor the cancelled ctx; if they do not
+// return in time it emits a ToolLeakEvent per still-running call and reports the
+// batch as leaked. A leaked batch is abandoned: its goroutines keep running but
+// their late writes are dropped — emit is guarded and the result slice is never
+// re-read after a leak.
+func (r *promptRun) awaitToolBatch(ctx context.Context, b *toolBatch) (leaked bool) {
+	waitDone := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		return false
+	case <-ctx.Done():
+	}
+
+	r.setPhase(PhaseShuttingDown)
+	timeout := r.agent.config.ShutdownTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	select {
+	case <-waitDone:
+		return false
+	case <-time.After(timeout):
+	}
+
+	b.mu.Lock()
+	var leakedCalls []preparedCall
+	for i := range b.preps {
+		if b.preps[i].immediate || b.completed[i] {
+			continue
+		}
+		leakedCalls = append(leakedCalls, b.preps[i])
+	}
+	b.mu.Unlock()
+
+	for _, p := range leakedCalls {
+		r.emit(ToolLeakEvent{
+			ToolName: p.name,
+			CallID:   p.callID,
+			Duration: time.Since(b.startedAt).Milliseconds(),
+		})
+	}
+	return true
+}
+
 func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent, tools []RegisteredTool) error {
 	r.setPhase(PhaseExecutingTools)
 	if ctx.Err() != nil {
@@ -554,7 +640,11 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 	// concurrently, each emitting its tool-end event as it finalizes (completion
 	// order). Immediate outcomes are recorded in place.
 	results := make([]toolOutcome, len(toolCalls))
-	var wg sync.WaitGroup
+	batch := &toolBatch{
+		completed: make([]bool, len(toolCalls)),
+		preps:     preps,
+		startedAt: time.Now(),
+	}
 	sema := make(chan struct{}, r.agent.config.MaxParallelTools)
 	if r.agent.config.MaxParallelTools == 0 {
 		sema = nil // unbounded
@@ -565,9 +655,9 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 			results[i] = toolOutcome{callID: p.callID, name: p.name, err: p.err}
 			continue
 		}
-		wg.Add(1)
+		batch.wg.Add(1)
 		go func(idx int, p preparedCall) {
-			defer wg.Done()
+			defer batch.wg.Done()
 			if sema != nil {
 				sema <- struct{}{}
 				defer func() { <-sema }()
@@ -584,10 +674,19 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 			}
 
 			results[idx] = toolOutcome{callID: p.callID, name: p.name, result: res}
+			batch.mu.Lock()
+			batch.completed[idx] = true
+			batch.mu.Unlock()
 			r.emit(ToolCallEndEvent{CallID: p.callID, ToolName: p.name, Result: res})
 		}(i, p)
 	}
-	wg.Wait()
+
+	// A tool that ignores its cancelled ctx must not hang the prompt: bound the
+	// wait by ShutdownTimeout. A leaked batch is abandoned without reading
+	// results, so the leaked goroutines' late writes cannot corrupt the transcript.
+	if r.awaitToolBatch(ctx, batch) {
+		return context.Cause(ctx)
+	}
 
 	if len(results) > 0 {
 		allTerminate := true
