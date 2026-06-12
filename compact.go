@@ -56,7 +56,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 // Aligned with upstream 0.79.1 structured template.
 // Adaptation: upstream references "<previous-summary> tags" (injected inline in TS);
 // Go passes the previous summary as a BranchSummary message above, so that phrase is reworded.
-const UpdateSummarizationPrompt = `The messages above are NEW conversation messages to incorporate into the existing summary provided as a prior compaction summary message above.
+const UpdateSummarizationPrompt = `The messages above are NEW conversation messages to incorporate into the existing summary provided as a prior compaction summary message in this conversation.
 
 Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
