@@ -109,7 +109,10 @@ func (ThinkingUnsupportedEvent) isAgentEvent() {}
 type ToolLeakEvent struct {
 	ToolName string
 	CallID   string
-	Duration int64 // milliseconds
+	// Duration is milliseconds measured from batch start to leak declaration
+	// (≈ time-to-cancellation + ShutdownTimeout) — not the leaked tool's
+	// eventual runtime, which is unbounded since the goroutine is still running.
+	Duration int64
 }
 
 func (ToolLeakEvent) isAgentEvent() {}

@@ -568,7 +568,9 @@ type toolBatch struct {
 // return in time it emits a ToolLeakEvent per still-running call and reports the
 // batch as leaked. A leaked batch is abandoned: its goroutines keep running but
 // their late writes are dropped — emit is guarded and the result slice is never
-// re-read after a leak.
+// re-read after a leak. Each ToolLeakEvent's Duration is measured from batch
+// start at leak declaration (≈ time-to-cancellation + ShutdownTimeout), not the
+// leaked tool's eventual runtime — the tool is still running when it is emitted.
 func (r *promptRun) awaitToolBatch(ctx context.Context, b *toolBatch) (leaked bool) {
 	waitDone := make(chan struct{})
 	go func() {

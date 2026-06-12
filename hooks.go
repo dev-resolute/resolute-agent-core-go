@@ -25,6 +25,8 @@ type Hooks struct {
 	// a no-op. Matches upstream pi 0.72.0 shouldStopAfterTurn decision-point
 	// semantics. It is also invoked on turns that end via ToolResult.Terminate;
 	// on those turns the return value is ignored — the prompt ends regardless.
+	// The auto-continue loop imposes no turn cap by design (parity with
+	// upstream pi); this hook is the mechanism for imposing one.
 	ShouldStopAfterTurn func(ctx context.Context, c AfterTurnCtx) bool
 
 	// OnConfigUpdate is called synchronously by each setter (SetModel,

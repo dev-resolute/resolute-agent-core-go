@@ -6,7 +6,7 @@
 
 **Agent**: Session-shaped, mutable object that owns tools, hooks, the session backend, and mutable runtime config (model, tools, system prompt, thinking level, skills). One Agent represents one conversation; at most one prompt is in flight at a time. Multi-tenant servers hold N Agents for N sessions. Control methods `Steer`, `FollowUp`, `Stop`, `State`, `Phase`, `Transcript`, `Close` live here (ADR-0006).
 
-**Prompt**: `Agent.Prompt(ctx, msg, opts)` — starts an LLM call and returns an `EventStream`. Returns `ErrAgentBusy` when a prompt is already in flight. Replaces v0.1.x `Agent.Run`; the `*Run` handle is dissolved (ADR-0006).
+**Prompt**: `Agent.Prompt(ctx, msg, opts)` — starts a prompt and returns an `EventStream`. Returns `ErrAgentBusy` when a prompt is already in flight. Replaces v0.1.x `Agent.Run`; the `*Run` handle is dissolved (ADR-0006). **Multi-turn contract:** a prompt spans one or more LLM turns until the model stops calling tools — a turn that calls tools auto-continues so the model sees its tool results on the next call. The loop is **uncapped by design** (parity with upstream pi); `ShouldStopAfterTurn` is the capping mechanism, alongside `ToolResult.Terminate`, `Stop()`, and caller-`ctx` cancellation.
 
 **EventStream**: Struct returned by `Agent.Prompt`. Carries an `Events` channel (typed events, closed by the sender on completion) and a `Done` channel (one terminal `PromptResult`).
 
