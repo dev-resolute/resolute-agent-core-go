@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -91,7 +92,7 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		activeToolNames: cfg.ActiveToolNames,
 		systemPrompt:    cfg.SystemPrompt,
 		thinkingLevel:   cfg.DefaultThinking,
-		thinkingBudgets: cloneThinkingBudgets(cfg.ThinkingBudgets),
+		thinkingBudgets: maps.Clone(cfg.ThinkingBudgets),
 	}, nil
 }
 

@@ -10,7 +10,7 @@ import (
 
 // recordingProvider captures the LLMRequest received by Stream so tests can
 // assert on it without a live provider. Capabilities reports Thinking:true so
-// the agent does not downgrade the thinking level before the request is built.
+// the active thinking level is not downgraded; budgets are set unconditionally.
 type recordingProvider struct {
 	name string
 	emit func(events chan<- llm.LLMEvent)

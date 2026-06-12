@@ -1,6 +1,10 @@
 package pi
 
-import "github.com/resolute-sh/pi-llm-go"
+import (
+	"maps"
+
+	"github.com/resolute-sh/pi-llm-go"
+)
 
 // turnSnapshot is the immutable copy of the Agent's runtime config used to
 // build exactly one provider request. It is taken at turn start under the
@@ -32,19 +36,8 @@ func (a *Agent) snapshot() turnSnapshot {
 		tools:           tools,
 		systemPrompt:    a.systemPrompt,
 		thinkingLevel:   a.thinkingLevel,
-		thinkingBudgets: cloneThinkingBudgets(a.thinkingBudgets),
+		thinkingBudgets: maps.Clone(a.thinkingBudgets),
 		skills:          skills,
 	}
 }
 
-// cloneThinkingBudgets returns a defensive copy of m. Nil in, nil out.
-func cloneThinkingBudgets(m map[llm.ThinkingLevel]int) map[llm.ThinkingLevel]int {
-	if m == nil {
-		return nil
-	}
-	out := make(map[llm.ThinkingLevel]int, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
