@@ -10,9 +10,12 @@ import (
 	"github.com/resolute-sh/pi-llm-go"
 )
 
-// SummarizationSystemPrompt is the system prompt used for the first summarization call.
-// Verbatim from upstream at SHA fc8a155.
-const SummarizationSystemPrompt = `You are a helpful assistant that summarizes conversation history. When given a conversation transcript, produce a concise summary that preserves the key facts, decisions, and context. Focus on information that would be needed to continue the conversation meaningfully. Do not include meta-commentary about the summarization itself.`
+// SummarizationSystemPrompt is the system prompt used for summarization calls.
+// Matches upstream 0.79.1 — neutral "AI assistant" wording so compaction works
+// correctly for non-coding harnesses.
+const SummarizationSystemPrompt = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`
 
 // SummarizationPrompt is the user prompt for the first summarization of a conversation prefix.
 // Verbatim from upstream at SHA fc8a155.
