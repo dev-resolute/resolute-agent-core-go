@@ -11,9 +11,12 @@ import (
 // recordingProvider captures the LLMRequest received by Stream so tests can
 // assert on it without a live provider. Capabilities reports Thinking:true so
 // the active thinking level is not downgraded; budgets are set unconditionally.
+// When streamErr is non-nil, Stream reports it as a fatal StreamResult error
+// so callers can assert on terminal error propagation without a live provider.
 type recordingProvider struct {
-	name string
-	emit func(events chan<- llm.LLMEvent)
+	name      string
+	emit      func(events chan<- llm.LLMEvent)
+	streamErr error
 
 	mu      sync.Mutex
 	lastReq llm.LLMRequest
@@ -32,9 +35,11 @@ func (p *recordingProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.
 	events := make(chan llm.LLMEvent)
 	done := make(chan llm.StreamResult, 1)
 	go func() {
-		p.emit(events)
+		if p.streamErr == nil {
+			p.emit(events)
+		}
 		close(events)
-		done <- llm.StreamResult{}
+		done <- llm.StreamResult{Err: p.streamErr}
 	}()
 	return llm.NewEventStream(events, done)
 }
@@ -43,6 +48,12 @@ func (p *recordingProvider) capturedBudgets() map[llm.ThinkingLevel]int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastReq.ThinkingBudgets
+}
+
+func (p *recordingProvider) capturedReq() llm.LLMRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastReq
 }
 
 func newRecordingProvider(name string) *recordingProvider {

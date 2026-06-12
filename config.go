@@ -35,6 +35,9 @@ type AgentConfig struct {
 	ThinkingBudgets  map[llm.ThinkingLevel]int
 	ReserveTokens    int
 	KeepRecentTokens int
+	// Transport is the preferred stream transport forwarded to every LLMRequest.
+	// Zero value behaves as TransportAuto.
+	Transport llm.TransportPreference
 }
 
 // ConvertToLLMFn transforms agent-side Messages into LLM-shaped messages.

@@ -372,6 +372,8 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 		Thinking:        thinking,
 		ThinkingBudgets: snap.thinkingBudgets,
 		ProviderHints:   r.providerHints,
+		SessionID:       string(r.sessionID),
+		Transport:       snap.transport,
 	}
 
 	if r.agent.hooks.BeforeProviderRequest != nil {

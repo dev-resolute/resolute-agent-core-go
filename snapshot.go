@@ -20,6 +20,7 @@ type turnSnapshot struct {
 	thinkingLevel   llm.ThinkingLevel
 	thinkingBudgets map[llm.ThinkingLevel]int
 	skills          []Skill
+	transport       llm.TransportPreference
 }
 
 // snapshot returns a turnSnapshot of the Agent's current runtime config.
@@ -38,6 +39,7 @@ func (a *Agent) snapshot() turnSnapshot {
 		thinkingLevel:   a.thinkingLevel,
 		thinkingBudgets: maps.Clone(a.thinkingBudgets),
 		skills:          skills,
+		transport:       a.config.Transport,
 	}
 }
 
