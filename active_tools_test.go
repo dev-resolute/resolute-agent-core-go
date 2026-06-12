@@ -257,12 +257,12 @@ func TestResumeRestoresActiveSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := repo.AppendActiveToolsChange(ctx, sid, []string{"a"}); err != nil {
-		t.Fatalf("AppendActiveToolsChange: %v", err)
+	if err := repo.Append(ctx, sid, NewActiveToolsChange([]string{"a"})); err != nil {
+		t.Fatalf("Append active tools change: %v", err)
 	}
 	// last-entry-wins
-	if err := repo.AppendActiveToolsChange(ctx, sid, []string{"b"}); err != nil {
-		t.Fatalf("AppendActiveToolsChange: %v", err)
+	if err := repo.Append(ctx, sid, NewActiveToolsChange([]string{"b"})); err != nil {
+		t.Fatalf("Append active tools change: %v", err)
 	}
 
 	a, err := NewAgent(AgentConfig{

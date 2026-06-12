@@ -65,11 +65,6 @@ func (j *JSONLSession) Append(ctx context.Context, id pi.SessionID, msgs ...pi.M
 	return f.Sync()
 }
 
-// AppendActiveToolsChange implements SessionRepo.
-func (j *JSONLSession) AppendActiveToolsChange(ctx context.Context, id pi.SessionID, names []string) error {
-	return j.Append(ctx, id, pi.NewActiveToolsChange(names))
-}
-
 // Load implements SessionRepo.
 func (j *JSONLSession) Load(ctx context.Context, id pi.SessionID) ([]pi.Message, error) {
 	j.mu.Lock()

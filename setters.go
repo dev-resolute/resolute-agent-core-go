@@ -108,7 +108,7 @@ func (a *Agent) SetActiveTools(ctx context.Context, names []string) error {
 	a.mu.Unlock()
 
 	if bound && !running {
-		if err := a.session.AppendActiveToolsChange(ctx, sid, stored); err != nil {
+		if err := a.session.Append(ctx, sid, NewActiveToolsChange(stored)); err != nil {
 			return fmt.Errorf("persisting active tools change: %w", err)
 		}
 	}

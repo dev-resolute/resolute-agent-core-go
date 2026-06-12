@@ -6,17 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/resolute-sh/pi-core-agent-go"
 )
 
-func TestMemorySessionAppendActiveToolsChange(t *testing.T) {
+func TestMemorySessionActiveToolsChange(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemorySession()
 	id, err := s.Create(ctx)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := s.AppendActiveToolsChange(ctx, id, []string{"a", "b"}); err != nil {
-		t.Fatalf("AppendActiveToolsChange: %v", err)
+	if err := s.Append(ctx, id, pi.NewActiveToolsChange([]string{"a", "b"})); err != nil {
+		t.Fatalf("Append active tools change: %v", err)
 	}
 	msgs, err := s.Load(ctx, id)
 	if err != nil {
@@ -45,8 +47,8 @@ func TestJSONLSessionActiveToolsChangeGoShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := s.AppendActiveToolsChange(ctx, id, []string{"a"}); err != nil {
-		t.Fatalf("AppendActiveToolsChange: %v", err)
+	if err := s.Append(ctx, id, pi.NewActiveToolsChange([]string{"a"})); err != nil {
+		t.Fatalf("Append active tools change: %v", err)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, string(id)+".jsonl"))

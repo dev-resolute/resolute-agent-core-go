@@ -307,7 +307,7 @@ func (a *Agent) recordActiveToolsOnCreate(ctx context.Context, sid SessionID) er
 	if !differs {
 		return nil
 	}
-	return a.session.AppendActiveToolsChange(ctx, sid, names)
+	return a.session.Append(ctx, sid, NewActiveToolsChange(names))
 }
 
 // restoreActiveToolsFromSession resolves the active-tools set from a resumed
@@ -468,10 +468,6 @@ func (m *internalMemorySession) List(ctx context.Context) ([]SessionMeta, error)
 		out = append(out, meta)
 	}
 	return out, nil
-}
-
-func (m *internalMemorySession) AppendActiveToolsChange(ctx context.Context, id SessionID, names []string) error {
-	return m.Append(ctx, id, NewActiveToolsChange(names))
 }
 
 func (m *internalMemorySession) AppendBranchSummary(ctx context.Context, id SessionID, summary BranchSummary) error {
