@@ -23,7 +23,8 @@ type Hooks struct {
 	// steer/follow-up queues are polled or the next LLM call starts. When it
 	// returns true the loop exits with a clean, nil-error PromptResult. Nil is
 	// a no-op. Matches upstream pi 0.72.0 shouldStopAfterTurn decision-point
-	// semantics.
+	// semantics. It is also invoked on turns that end via ToolResult.Terminate;
+	// on those turns the return value is ignored — the prompt ends regardless.
 	ShouldStopAfterTurn func(ctx context.Context, c AfterTurnCtx) bool
 
 	// OnConfigUpdate is called synchronously by each setter (SetModel,
