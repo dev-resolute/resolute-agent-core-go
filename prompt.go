@@ -210,6 +210,23 @@ func (r *promptRun) flushPendingActiveTools(ctx context.Context) error {
 	return nil
 }
 
+// asCancellation classifies a terminal error as a prompt cancellation and
+// returns the contract error to surface (ADR-0004). A bare parent-context
+// cancellation — context.Canceled, propagated when the caller's ctx is done with
+// no agent-set cause — maps to ErrPromptCancelled. Agent-set causes
+// (ErrAgentStopped, or an already-mapped ErrPromptCancelled) are preserved and
+// take precedence. Non-cancellation errors return (err, false) and remain
+// provider failures. context.DeadlineExceeded is intentionally not mapped.
+func asCancellation(err error) (error, bool) {
+	switch {
+	case errors.Is(err, ErrAgentStopped):
+		return ErrAgentStopped, true
+	case errors.Is(err, ErrPromptCancelled), errors.Is(err, context.Canceled):
+		return ErrPromptCancelled, true
+	}
+	return err, false
+}
+
 // loop is the main prompt loop.
 func (r *promptRun) loop(ctx context.Context) {
 	defer r.closeEvents()
@@ -242,13 +259,14 @@ func (r *promptRun) loop(ctx context.Context) {
 	for {
 		hadToolCalls, err := r.runOneTurn(ctx)
 		if err != nil {
-			if errors.Is(err, ErrAgentStopped) || errors.Is(err, ErrPromptCancelled) {
+			if cause, cancelled := asCancellation(err); cancelled {
 				// The bounded wait on the in-flight tool batch (executeTools)
 				// already honored ShutdownTimeout, so deliver the terminal result
-				// directly.
+				// directly. A bare caller-ctx cancellation surfaces as
+				// ErrPromptCancelled with no spurious LLMErrorEvent.
 				r.setPhase(PhaseDone)
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
 				return
 			}
 			r.emit(LLMErrorEvent{Error: err, Transient: false})
@@ -315,9 +333,10 @@ func (r *promptRun) loop(ctx context.Context) {
 		// stopped prompt does not issue another LLM call.
 		if hadToolCalls {
 			if ctx.Err() != nil {
+				cause, _ := asCancellation(context.Cause(ctx))
 				r.setPhase(PhaseDone)
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: context.Cause(ctx)}
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
 				return
 			}
 			continue
@@ -336,9 +355,10 @@ func (r *promptRun) loop(ctx context.Context) {
 			r.emit(FollowUpInjectedEvent{Message: fu})
 			continue
 		case <-ctx.Done():
+			cause, _ := asCancellation(context.Cause(ctx))
 			r.setPhase(PhaseDone)
 			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: context.Cause(ctx)}
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: cause}
 			return
 		default:
 			r.setPhase(PhaseDone)
