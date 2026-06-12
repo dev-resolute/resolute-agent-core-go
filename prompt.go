@@ -49,6 +49,14 @@ type promptRun struct {
 	// context.WithCancelCause. It is stored here so Agent.Context() can
 	// expose it as a lifecycle accessor. Stored alongside cancel under
 	// cancelMu; set in Agent.Prompt before loop() starts.
+	//
+	// This deviates from CTX-1 ("never store ctx in structs"): the field is an
+	// exposure-only handle for the lifecycle accessor, not a context threaded
+	// through call arguments — every function still takes ctx as its first
+	// parameter and loop() receives the inner context explicitly. The standard
+	// library does the same in net/http.Request, which stores its context for
+	// Request.Context(). Sanctioned as deviation 6 in
+	// docs/adr/0004-cancellation-deviations.md.
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
 	cancelMu sync.Mutex

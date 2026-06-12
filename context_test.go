@@ -116,14 +116,15 @@ func TestContext_IdleAfterNormalCompletion(t *testing.T) {
 	}
 }
 
-func TestContext_ToolObservesStopCancellation(t *testing.T) {
-	t.Parallel()
+// startProbedPrompt starts a single-tool prompt whose probe tool captures
+// a.Context() from inside the tool and then blocks until that context is
+// cancelled. It returns the agent, the live event stream, and the agent
+// context observed from inside the tool. Events are drained in the background
+// so emit never blocks.
+func startProbedPrompt(t *testing.T, callerCtx context.Context) (*Agent, *EventStream, context.Context) {
+	t.Helper()
 
-	// given an agent with a probe tool that captures the agent context and
-	// blocks until its own ctx is cancelled
-	var a *Agent
 	agentCtxCh := make(chan context.Context, 1)
-
 	provider := &stubProviderOnce{
 		name: "test",
 		emitOne: func(events chan<- llm.LLMEvent) {
@@ -137,13 +138,12 @@ func TestContext_ToolObservesStopCancellation(t *testing.T) {
 		},
 	}
 
+	var a *Agent
 	probeTool := NewTool(Tool[struct{}]{
 		Name:        "ctx_probe",
 		Description: "probe agent context",
 		Execute: func(ctx context.Context, _ struct{}) (ToolResult, error) {
-			// send the agent context to the test harness
 			agentCtxCh <- a.Context()
-			// block until the prompt context is cancelled
 			<-ctx.Done()
 			return ToolResult{}, ctx.Err()
 		},
@@ -159,24 +159,29 @@ func TestContext_ToolObservesStopCancellation(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 
-	stream, err := a.Prompt(context.Background(), NewText("user", "hi"), PromptOpts{})
+	stream, err := a.Prompt(callerCtx, NewText("user", "hi"), PromptOpts{})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-
-	// drain events in background so emit() never blocks
 	go func() {
 		for range stream.Events {
 		}
 	}()
 
-	// when the tool provides the agent context
 	var agentCtx context.Context
 	select {
 	case agentCtx = <-agentCtxCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout: tool did not provide agent context")
 	}
+	return a, stream, agentCtx
+}
+
+func TestContext_ToolObservesStopCancellation(t *testing.T) {
+	t.Parallel()
+
+	// given an agent with a probe tool holding a live agent context
+	a, stream, agentCtx := startProbedPrompt(t, context.Background())
 
 	// then the context is live (not done) while the prompt is in flight
 	select {
@@ -222,59 +227,9 @@ func TestContext_ToolObservesStopCancellation(t *testing.T) {
 func TestContext_CallerCancellationObservable(t *testing.T) {
 	t.Parallel()
 
-	// given a probe tool that blocks waiting for cancellation
-	var a *Agent
-	agentCtxCh := make(chan context.Context, 1)
-
-	provider := &stubProviderOnce{
-		name: "test",
-		emitOne: func(events chan<- llm.LLMEvent) {
-			events <- llm.ToolCallStartEvent{
-				CallID:   "c1",
-				ToolName: "ctx_probe",
-				Args:     json.RawMessage(`{}`),
-			}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
-			events <- llm.MessageEndEvent{}
-		},
-	}
-
-	probeTool := NewTool(Tool[struct{}]{
-		Name:        "ctx_probe",
-		Description: "probe agent context",
-		Execute: func(ctx context.Context, _ struct{}) (ToolResult, error) {
-			agentCtxCh <- a.Context()
-			<-ctx.Done()
-			return ToolResult{}, ctx.Err()
-		},
-	})
-
-	var err error
-	a, err = NewAgent(AgentConfig{
-		Providers:    []llm.LLMProvider{provider},
-		DefaultModel: "test/model",
-		Tools:        []RegisteredTool{probeTool},
-	})
-	if err != nil {
-		t.Fatalf("NewAgent: %v", err)
-	}
-
+	// given a probe tool holding a live agent context derived from a caller ctx
 	callerCtx, callerCancel := context.WithCancelCause(context.Background())
-	stream, err := a.Prompt(callerCtx, NewText("user", "hi"), PromptOpts{})
-	if err != nil {
-		t.Fatalf("Prompt: %v", err)
-	}
-	go func() {
-		for range stream.Events {
-		}
-	}()
-
-	var agentCtx context.Context
-	select {
-	case agentCtx = <-agentCtxCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout: tool did not provide agent context")
-	}
+	_, stream, agentCtx := startProbedPrompt(t, callerCtx)
 
 	// when the caller context is cancelled
 	callerCancel(ErrPromptCancelled)
@@ -292,6 +247,63 @@ func TestContext_CallerCancellationObservable(t *testing.T) {
 	}
 
 	<-stream.Done
+}
+
+// TestContext_NoLiveContextAfterCompletion reproduces the reviewer's probe for
+// the loop-exit cancellation defect: before the fix, a prompt's inner context
+// was never cancelled on normal completion, so a caller doing <-stream.Done then
+// Context() could observe a live, never-cancelled context for a finished prompt
+// (~1-2 per 2000 iterations, in the window between the result send and the
+// running-counter decrement). 2000 iterations preserves the reviewer's measured
+// repro power while staying CI-tolerable (sub-second with the hermetic stub).
+//
+// Not parallel: it deliberately races Context() against loop teardown and runs
+// many iterations.
+func TestContext_NoLiveContextAfterCompletion(t *testing.T) {
+	const iterations = 2000
+
+	provider := &stubProvider{
+		name: "test",
+		emit: func(events chan<- llm.LLMEvent) {
+			events <- llm.TextDeltaEvent{Delta: "hi"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	for i := 0; i < iterations; i++ {
+		stream, err := a.Prompt(context.Background(), NewText("user", "hi"), PromptOpts{})
+		if err != nil {
+			t.Fatalf("iteration %d: Prompt: %v", i, err)
+		}
+		go func() {
+			for range stream.Events {
+			}
+		}()
+
+		// observe the prompt as a caller would: take the terminal result, then
+		// immediately read Context()
+		<-stream.Done
+		ctx := a.Context()
+
+		// a finished prompt's context must read as no-longer-in-flight: done,
+		// with cause ErrNoPromptInFlight (idle context, or the inner context
+		// cancelled on loop exit) — never a live, never-cancelled context
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: Context() returned a live context after stream.Done", i)
+		}
+		if cause := context.Cause(ctx); !errors.Is(cause, ErrNoPromptInFlight) {
+			t.Fatalf("iteration %d: context.Cause = %v, want ErrNoPromptInFlight", i, cause)
+		}
+	}
 }
 
 func TestContext_RaceFree(t *testing.T) {

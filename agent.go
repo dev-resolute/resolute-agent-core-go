@@ -210,7 +210,16 @@ func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*Even
 	a.mu.Unlock()
 
 	launched = true
-	go pr.loop(innerCtx)
+	// Cancel the inner ctx on every loop exit. A clean completion adopts
+	// ErrNoPromptInFlight, so a late Agent.Context() observation of a finished
+	// prompt reads identically to the idle context rather than handing back a
+	// live, never-cancelled ctx. Stop() and caller cancellation are preserved
+	// because CancelCauseFunc is first-cause-wins. Cancelling also unregisters
+	// the child from its parent, preventing the per-prompt context leak.
+	go func() {
+		defer cancel(ErrNoPromptInFlight)
+		pr.loop(innerCtx)
+	}()
 
 	return &EventStream{Events: pr.events, Done: pr.done}, nil
 }
