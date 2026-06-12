@@ -267,12 +267,12 @@ func (r *promptRun) loop(ctx context.Context) {
 			return
 		}
 
+		// A queued steer lands here, at the post-batch seam: the current turn's
+		// tool batch has fully finished. Drain it non-blocking so it precedes any
+		// auto-continue, driving the next LLM call with the steer in context and
+		// never skipping pending tool calls mid-batch.
 		select {
 		case sm := <-r.steerCh:
-			// Steering lands only here, at the post-batch seam: the current
-			// turn's tool batch has fully finished. Injecting the message and
-			// continuing drives the next LLM call with the steer in context,
-			// never skipping pending tool calls mid-batch.
 			if err := r.appendTranscript(ctx, sm.msg); err != nil {
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
 				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: err}
@@ -282,6 +282,26 @@ func (r *promptRun) loop(ctx context.Context) {
 			r.emit(SteerInjectedEvent{Message: sm.msg})
 			close(sm.injected)
 			continue
+		default:
+		}
+
+		// A turn that called tools auto-continues: the Prompt contract spans one
+		// or more LLM turns until the model stops calling tools, so the model must
+		// see its tool results on the next call. Honor cancellation first so a
+		// stopped prompt does not issue another LLM call.
+		if hadToolCalls {
+			if ctx.Err() != nil {
+				r.setPhase(PhaseDone)
+				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: context.Cause(ctx)}
+				return
+			}
+			continue
+		}
+
+		// The model produced a text-only turn. Drain a queued follow-up, honor
+		// cancellation, or finish.
+		select {
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
 				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})

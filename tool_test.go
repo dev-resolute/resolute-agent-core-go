@@ -178,24 +178,18 @@ func TestPrepareArgumentsTypedTool(t *testing.T) {
 // wrap in its content, (b) not treat the error as fatal (PromptResult.Err==nil),
 // and (c) continue the loop (provider receives a second call).
 //
-// The test mirrors the stop_after_turn_test.go pattern: a gate channel holds the
-// first emit until a follow-up is in the channel, guaranteeing the loop sees the
-// follow-up at the turn-end select and issues a second provider call.
+// The tool-call turn auto-continues (Fix A), so the second provider call needs
+// no external nudge: turn 1 emits the broken tool call, turn 2 is text-only.
 func TestPrepareArgumentsErrorYieldsToolErrorResult(t *testing.T) {
 	t.Parallel()
 
 	var calls atomic.Int32
-
-	// followUpQueued gates the provider's first emit so the follow-up message
-	// is present in followUpCh before the first turn finishes.
-	followUpQueued := make(chan struct{})
 
 	provider := &stubProvider{
 		name: "test",
 		emit: func(events chan<- llm.LLMEvent) {
 			n := calls.Add(1)
 			if n == 1 {
-				<-followUpQueued
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "broken", Args: []byte("{}")}
 				events <- llm.ToolCallEndEvent{CallID: "c1"}
 				events <- llm.MessageEndEvent{}
@@ -230,14 +224,6 @@ func TestPrepareArgumentsErrorYieldsToolErrorResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-
-	// Queue a follow-up on the in-flight promptRun before unblocking the
-	// provider; the loop will pick it up at the turn-end select and continue.
-	a.mu.RLock()
-	pr := a.current
-	a.mu.RUnlock()
-	pr.followUpCh <- NewText("user", "continue")
-	close(followUpQueued)
 
 	_, result := drain(t, stream)
 

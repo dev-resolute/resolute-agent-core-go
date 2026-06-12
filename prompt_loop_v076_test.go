@@ -82,6 +82,15 @@ func requestMentions(req llm.LLMRequest, needle string) bool {
 	return false
 }
 
+func requestHasToolResult(req llm.LLMRequest, callID, content string) bool {
+	for _, m := range req.Messages {
+		if tr, ok := m.Content.(llm.ToolResultContent); ok && tr.CallID == callID && tr.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
 func toolResults(msgs []Message) map[string]struct {
 	content string
 	isError bool
@@ -104,6 +113,66 @@ func toolResults(msgs []Message) map[string]struct {
 		}{content: content, isError: isError}
 	}
 	return out
+}
+
+// Fix A (v0.76 core-loop parity): a turn whose response contained tool calls
+// auto-continues — the model gets a second LLM call carrying the tool results,
+// with no external steer or follow-up. The prompt ends once the model stops
+// calling tools. This is the Prompt contract: "spans one or more LLM turns until
+// the model stops calling tools".
+func TestToolCallTurnAutoContinues_v076(t *testing.T) {
+	t.Parallel()
+
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			if call == 1 {
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping")}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.MessageEndEvent{}
+				return
+			}
+			events <- llm.TextDeltaEvent{Delta: "done"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	echo := NewTool(Tool[echoParams]{
+		Name:        "echo",
+		Description: "echo",
+		Execute: func(ctx context.Context, p echoParams) (ToolResult, error) {
+			return ToolResult{Content: "echoed:" + p.Value}, nil
+		},
+	})
+
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{echo},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, result := drain(t, stream)
+	if result.Err != nil {
+		t.Fatalf("result.Err = %v, want nil", result.Err)
+	}
+
+	if got := provider.callCount(); got != 2 {
+		t.Fatalf("provider called %d times, want 2 (tool-call turn must auto-continue, then stop)", got)
+	}
+
+	req, ok := provider.requestForCall(2)
+	if !ok {
+		t.Fatal("no second request recorded")
+	}
+	if !requestHasToolResult(req, "c1", "echoed:ping") {
+		t.Errorf("second LLM request did not carry the tool_result for c1: %+v", req.Messages)
+	}
 }
 
 // Fix #1 (upstream 0.75.4): tool-call preflight stops preparing sibling tool
@@ -279,10 +348,15 @@ func TestAfterToolCallErrorYieldsErrorResult_v076(t *testing.T) {
 
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
-			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
-			events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-			events <- llm.ToolCallEndEvent{CallID: "c2"}
+			if call == 1 {
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
+				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.MessageEndEvent{}
+				return
+			}
+			events <- llm.TextDeltaEvent{Delta: "done"}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -380,8 +454,13 @@ func TestPerCallErrorsPersistAsErrorResult_v076(t *testing.T) {
 
 			provider := &loopProvider{
 				emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
-					events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: tt.toolName, Args: echoArgs("x")}
-					events <- llm.ToolCallEndEvent{CallID: "c1"}
+					if call == 1 {
+						events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: tt.toolName, Args: echoArgs("x")}
+						events <- llm.ToolCallEndEvent{CallID: "c1"}
+						events <- llm.MessageEndEvent{}
+						return
+					}
+					events <- llm.TextDeltaEvent{Delta: "done"}
 					events <- llm.MessageEndEvent{}
 				},
 			}
@@ -436,10 +515,15 @@ func TestParallelToolEndCompletionOrderResultsSourceOrder_v076(t *testing.T) {
 
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
-			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
-			events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-			events <- llm.ToolCallEndEvent{CallID: "c2"}
+			if call == 1 {
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
+				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.MessageEndEvent{}
+				return
+			}
+			events <- llm.TextDeltaEvent{Delta: "done"}
 			events <- llm.MessageEndEvent{}
 		},
 	}
