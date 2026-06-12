@@ -133,19 +133,13 @@ agent.SetSkills(updatedSkills)
 - **`Transport` preference** wired through to the provider, defaulting to auto;
   websocket reserved for a future provider. (upstream 0.52.12/0.72.1; requires
   pi-llm-go v0.2.0)
-- **Attachment-aware token counting** — `EstimateTokens` now counts user image
-  attachments. (sub-feature from upstream 0.76.0 fix)
 
 ### Fixed
 
 Each fix landed with the corresponding upstream test ported to Go as a permanent
 `_v076_test.go` regression fixture.
 
-- Token estimates now count user image attachments consistently with tool-result
-  images. (upstream 0.76.0)
 - Tool-call preflight stops preparing sibling tool calls after the prompt is aborted.
-  (upstream 0.75.4)
-- Tail truncation handles oversized single-line output ending in a trailing newline.
   (upstream 0.75.4)
 - Steering waits until the current assistant message's tool-call batch fully finishes
   instead of skipping pending tool calls. (upstream 0.58.4)
