@@ -2,8 +2,10 @@
 
 ## [0.2.0] - 2026-05-28
 
+Tracks upstream pi-agent-core 0.79.1.
+
 This release adopts upstream Pi's single-runner, mutable-Agent shape (ADR-0006) and
-ports a set of v0.76.0 capabilities and correctness fixes. It is a breaking release;
+ports capabilities from upstream pi-agent-core 0.76.0–0.79.1. It is a breaking release;
 because there are no external consumers yet, it is a clean bump with no deprecation
 cycle. Migration is mechanical — see the recipe below.
 
@@ -109,8 +111,8 @@ agent.SetSkills(updatedSkills)
 ### Added
 
 - **Single-runner mutable Agent** with `SetModel`, `SetTools`, `SetSystemPrompt`,
-  `SetThinkingLevel`, `SetSkills`; turn-snapshot semantics (setters affect the next
-  turn, never the in-flight turn). (ADR-0006)
+  `SetThinkingLevel`, `SetSkills`, `SetActiveTools`; turn-snapshot semantics (setters
+  affect the next turn, never the in-flight turn). (ADR-0006)
 - **Skills.** `Skill` struct auto-rendered into the system prompt as an XML index of
   name + description + filePath; the model fetches full content on demand via a
   user-supplied content-reader tool. `DisableModelInvocation` hides a skill from the
@@ -133,6 +135,25 @@ agent.SetSkills(updatedSkills)
 - **`Transport` preference** wired through to the provider, defaulting to auto;
   websocket reserved for a future provider. (upstream 0.52.12/0.72.1; requires
   pi-llm-go v0.2.0)
+- **`Hooks.OnConfigUpdate`** — config-update notification hook; fires synchronously
+  inside every setter (`SetModel`, `SetThinkingLevel`, `SetTools`, `SetActiveTools`,
+  `SetSystemPrompt`, `SetSkills`) regardless of whether a Prompt is in flight. Carries
+  `ConfigUpdateCtx` with the changed `ConfigField` and old/new values. Go-shaped port
+  of upstream's `model_update` / `thinking_level_update` / `tools_update` events
+  (upstream 0.77.0; ADR-0007).
+- **Active-tools registry** — registered vs. active tool distinction:
+  `Agent.GetTools` returns all registered tools; `Agent.GetActiveTools` /
+  `Agent.SetActiveTools` manage the active subset; `AgentConfig.ActiveToolNames` seeds
+  the initial active set. Duplicate tool-name registration is rejected at construction.
+  The active-set change is persisted as an `active_tools_change` session entry and
+  replayed on resume. (upstream 0.77.0)
+
+### Changed
+
+- **Compaction summarization prompts** aligned with upstream 0.79.1's structured
+  templates and neutral "AI assistant" wording (upstream 0.79.0). Prompt text now
+  matches upstream exactly; callers using `UpdateSummarizationPrompt` see no API
+  change.
 
 ### Fixed
 
@@ -150,3 +171,10 @@ Each fix landed with the corresponding upstream test ported to Go as a permanent
 - Queued steering/follow-up messages resume correctly when a resumed session ends in
   an assistant message, preserving one-at-a-time ordering. (upstream 0.52.7)
 - `Prompt` rejects with `ErrAgentBusy` when a prompt is already streaming. (upstream 0.32.0)
+- Prompt loop auto-continues after a tool-call turn instead of halting; matches the
+  CONTEXT.md Prompt contract and upstream parity.
+- Tool-batch wait is bounded by `ShutdownTimeout`; a tool that ignores ctx emits
+  `ToolLeakEvent` and does not block `<-stream.Done` indefinitely. (ADR-0004
+  deviation 4)
+- Caller-context cancellation maps to `ErrPromptCancelled` on `PromptResult.Err`;
+  `Agent.Stop()` maps to `ErrAgentStopped`. (ADR-0004 deviations 1–2)
