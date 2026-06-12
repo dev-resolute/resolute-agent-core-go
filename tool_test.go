@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/resolute-sh/pi-llm-go"
 )
 
 func TestToolSchemaReflection(t *testing.T) {
@@ -166,6 +169,106 @@ func TestPrepareArgumentsTypedTool(t *testing.T) {
 				t.Errorf("Execute(%s) content = %q, want %q", tt.name, result.Content, tt.wantContent)
 			}
 		})
+	}
+}
+
+// TestPrepareArgumentsErrorYieldsToolErrorResult is the end-to-end criterion for
+// AGENT-4: when a tool's PrepareArguments hook returns an error the prompt loop
+// must (a) surface a tool_result with IsError=true and the "prepare arguments"
+// wrap in its content, (b) not treat the error as fatal (PromptResult.Err==nil),
+// and (c) continue the loop (provider receives a second call).
+//
+// The test mirrors the stop_after_turn_test.go pattern: a gate channel holds the
+// first emit until a follow-up is in the channel, guaranteeing the loop sees the
+// follow-up at the turn-end select and issues a second provider call.
+func TestPrepareArgumentsErrorYieldsToolErrorResult(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+
+	// followUpQueued gates the provider's first emit so the follow-up message
+	// is present in followUpCh before the first turn finishes.
+	followUpQueued := make(chan struct{})
+
+	provider := &stubProvider{
+		name: "test",
+		emit: func(events chan<- llm.LLMEvent) {
+			n := calls.Add(1)
+			if n == 1 {
+				<-followUpQueued
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "broken", Args: []byte("{}")}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.MessageEndEvent{}
+			} else {
+				events <- llm.TextDeltaEvent{Delta: "done"}
+				events <- llm.MessageEndEvent{}
+			}
+		},
+	}
+
+	brokenTool := NewTool(Tool[struct{}]{
+		Name:        "broken",
+		Description: "tool whose PrepareArguments always fails",
+		PrepareArguments: func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			return nil, errors.New("injected prepare error")
+		},
+		Execute: func(_ context.Context, _ struct{}) (ToolResult, error) {
+			return ToolResult{Content: "unreachable"}, nil
+		},
+	})
+
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{brokenTool},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	// Queue a follow-up on the in-flight promptRun before unblocking the
+	// provider; the loop will pick it up at the turn-end select and continue.
+	a.mu.RLock()
+	pr := a.current
+	a.mu.RUnlock()
+	pr.followUpCh <- NewText("user", "continue")
+	close(followUpQueued)
+
+	_, result := drain(t, stream)
+
+	// (b) prompt continued — PrepareArguments error is not fatal
+	if result.Err != nil {
+		t.Fatalf("PromptResult.Err = %v, want nil", result.Err)
+	}
+
+	// (a) transcript contains a tool_result with IsError=true whose content includes
+	// the "prepare arguments" wrap injected by typedTool.Execute.
+	var foundErrResult bool
+	for _, msg := range result.Messages {
+		if msg.Type != "tool_result" {
+			continue
+		}
+		_, _, content, _, isError, ok := msg.ToolResult()
+		if !ok {
+			continue
+		}
+		if isError && strings.Contains(content, "prepare arguments") {
+			foundErrResult = true
+			break
+		}
+	}
+	if !foundErrResult {
+		t.Fatalf("no tool_result with IsError=true containing %q found in transcript", "prepare arguments")
+	}
+
+	// (c) loop continued past the tool error — provider received a second call
+	if got := calls.Load(); got != 2 {
+		t.Errorf("provider.Stream() called %d times, want 2", got)
 	}
 }
 
