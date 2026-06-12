@@ -177,6 +177,13 @@ func (r *promptRun) flushPendingActiveTools(ctx context.Context) error {
 func (r *promptRun) loop(ctx context.Context) {
 	defer close(r.events)
 	defer close(r.done)
+	// Drain the deferral queue on every loop-exit path (success, error,
+	// cancellation), guaranteeing no entry is stranded or leaked into the next
+	// prompt's session. Registered before running.Add(-1) so it runs after the
+	// flag is cleared (defers run LIFO): once cleared, SetActiveTools persists
+	// immediately instead of enqueuing, so nothing can race in behind this final
+	// drain. Best-effort — the prompt has already concluded.
+	defer func() { _ = r.flushPendingActiveTools(ctx) }()
 	defer r.agent.running.Add(-1)
 
 	r.emit(AgentStartEvent{})

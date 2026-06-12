@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/resolute-sh/pi-llm-go"
 )
@@ -95,18 +96,19 @@ func (a *Agent) SetActiveTools(ctx context.Context, names []string) error {
 		a.mu.Unlock()
 		return err
 	}
+	stored := slices.Clone(names)
 	old := a.activeToolNames
-	a.activeToolNames = names
+	a.activeToolNames = stored
 	sid := a.lastSessionID
 	bound := sid != ""
 	running := a.isRunning()
 	if bound && running {
-		a.pendingActiveTools = append(a.pendingActiveTools, names)
+		a.pendingActiveTools = append(a.pendingActiveTools, stored)
 	}
 	a.mu.Unlock()
 
 	if bound && !running {
-		if err := a.session.AppendActiveToolsChange(ctx, sid, names); err != nil {
+		if err := a.session.AppendActiveToolsChange(ctx, sid, stored); err != nil {
 			return fmt.Errorf("persisting active tools change: %w", err)
 		}
 	}
@@ -115,7 +117,7 @@ func (a *Agent) SetActiveTools(ctx context.Context, names []string) error {
 		a.hooks.OnConfigUpdate(ConfigUpdateCtx{
 			Field:          ConfigFieldActiveTools,
 			OldActiveTools: old,
-			NewActiveTools: names,
+			NewActiveTools: stored,
 		})
 	}
 	return nil

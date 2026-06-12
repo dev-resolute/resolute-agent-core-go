@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -300,7 +301,7 @@ func (a *Agent) recordActiveToolsOnCreate(ctx context.Context, sid SessionID) er
 	differs := a.activeToolNames != nil && !sameStringSet(a.activeToolNames, toolNames(a.tools))
 	var names []string
 	if differs {
-		names = append([]string(nil), a.activeToolNames...)
+		names = slices.Clone(a.activeToolNames)
 	}
 	a.mu.RUnlock()
 	if !differs {
@@ -312,6 +313,13 @@ func (a *Agent) recordActiveToolsOnCreate(ctx context.Context, sid SessionID) er
 // restoreActiveToolsFromSession resolves the active-tools set from a resumed
 // session by scanning for the last active_tools_change entry; absence means all
 // registered tools are active. It also serves as the session-existence check.
+//
+// Names are restored verbatim and validated lazily at snapshot time, not on
+// restore: a name the current registry no longer registers is silently dropped
+// by filterActiveTools, since the registered tool set may legitimately differ
+// between runs. If every restored name is stale, the model is offered zero tools
+// for the resumed session. Restore deliberately does not validate against the
+// registry.
 func (a *Agent) restoreActiveToolsFromSession(ctx context.Context, sid SessionID) error {
 	msgs, err := a.session.Load(ctx, sid)
 	if err != nil {

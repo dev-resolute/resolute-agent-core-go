@@ -5,7 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/resolute-sh/pi-llm-go"
 )
+
+var errStubBoom = errors.New("stub provider boom")
+
+// stubProvider is a deterministic, hermetic LLM provider for unit tests. The
+// emit func writes the per-call event sequence; the provider then closes the
+// events channel and delivers an empty terminal result.
+type stubProvider struct {
+	name string
+	emit func(events chan<- llm.LLMEvent)
+}
+
+func (p *stubProvider) Name() string { return p.name }
+
+func (p *stubProvider) Capabilities(model string) llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{Streaming: true, ToolCalling: true}
+}
+
+func (p *stubProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
+	events := make(chan llm.LLMEvent)
+	done := make(chan llm.StreamResult, 1)
+	go func() {
+		p.emit(events)
+		close(events)
+		done <- llm.StreamResult{}
+	}()
+	return llm.NewEventStream(events, done)
+}
 
 func toolNamed(name string) RegisteredTool {
 	return NewTool(Tool[struct{}]{
@@ -395,6 +424,137 @@ func TestFlushPendingActiveTools(t *testing.T) {
 	a.mu.Unlock()
 	if pending != 0 {
 		t.Fatalf("pendingActiveTools = %d, want 0 (drained)", pending)
+	}
+}
+
+func TestEmptyActiveSetRoundTripsThroughBind(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repo := newInternalMemorySession()
+	provider := &stubProvider{
+		name: "test",
+		emit: func(events chan<- llm.LLMEvent) {
+			events <- llm.TextDeltaEvent{Delta: "ok"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	// given an agent whose active set is empty-but-non-nil (NO tools active)
+	a, err := NewAgent(AgentConfig{
+		Providers:       []llm.LLMProvider{provider},
+		DefaultModel:    "test/model",
+		Tools:           []RegisteredTool{toolNamed("a"), toolNamed("b")},
+		ActiveToolNames: []string{},
+		Session:         repo,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	// when a prompt binds the session and records the active set at bind time
+	stream, err := a.Prompt(ctx, NewText("user", "hi"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, result := drain(t, stream)
+	if result.Err != nil {
+		t.Fatalf("prompt error: %v", result.Err)
+	}
+	sid := a.State().SessionID
+	if sid == "" {
+		t.Fatal("expected a bound session id")
+	}
+
+	// then resuming in a fresh agent restores zero active tools (NONE, not ALL)
+	b, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{toolNamed("a"), toolNamed("b")},
+		Session:      repo,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if err := b.restoreActiveToolsFromSession(ctx, sid); err != nil {
+		t.Fatalf("restoreActiveToolsFromSession: %v", err)
+	}
+	if got := snapshotToolNames(b); len(got) != 0 {
+		t.Fatalf("resumed active tools = %v, want none (empty set must not resume as all)", got)
+	}
+}
+
+func TestErrorExitPathFlushesPendingAndNothingSurvives(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repo := newInternalMemorySession()
+	provider := &stubProvider{
+		name: "test",
+		emit: func(events chan<- llm.LLMEvent) {
+			events <- llm.LLMErrorEvent{Error: errStubBoom, Transient: false}
+		},
+	}
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{toolNamed("a"), toolNamed("b")},
+		Session:      repo,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	// given an active-tools change queued for flush at the turn-end safe point
+	a.mu.Lock()
+	a.pendingActiveTools = append(a.pendingActiveTools, []string{"a"})
+	a.mu.Unlock()
+
+	// when the prompt exits via the error path (provider non-transient error)
+	stream, err := a.Prompt(ctx, NewText("user", "hi"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, result := drain(t, stream)
+	if !errors.Is(result.Err, errStubBoom) {
+		t.Fatalf("prompt err = %v, want stub boom", result.Err)
+	}
+
+	// then nothing is stranded in the deferral queue
+	a.mu.Lock()
+	pending := len(a.pendingActiveTools)
+	a.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pendingActiveTools = %d after error exit, want 0", pending)
+	}
+
+	// and the queued entry was still flushed to the bound session
+	sid := a.State().SessionID
+	msgs, err := repo.Load(ctx, sid)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	names, ok := activeToolNamesFromTranscript(msgs)
+	if !ok || !sameStringSet(names, []string{"a"}) {
+		t.Fatalf("error-path flush = %v ok=%v, want [a]", names, ok)
+	}
+}
+
+func TestSetActiveToolsCopiesCallerSlice(t *testing.T) {
+	t.Parallel()
+	a, err := NewAgent(AgentConfig{
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{toolNamed("a"), toolNamed("b")},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	names := []string{"a"}
+	if err := a.SetActiveTools(context.Background(), names); err != nil {
+		t.Fatalf("SetActiveTools: %v", err)
+	}
+	names[0] = "b" // caller mutates its slice after the call
+
+	if got := snapshotToolNames(a); !sameStringSet(got, []string{"a"}) {
+		t.Fatalf("snapshot = %v, want [a] (caller mutation must not leak into the agent)", got)
 	}
 }
 
