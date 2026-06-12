@@ -38,6 +38,7 @@ type Agent struct {
 	activeToolNames []string
 	systemPrompt    string
 	thinkingLevel   llm.ThinkingLevel
+	thinkingBudgets map[llm.ThinkingLevel]int
 	skills          []Skill
 
 	// pendingActiveTools holds active-tools changes made while a prompt is in
@@ -90,6 +91,7 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 		activeToolNames: cfg.ActiveToolNames,
 		systemPrompt:    cfg.SystemPrompt,
 		thinkingLevel:   cfg.DefaultThinking,
+		thinkingBudgets: cloneThinkingBudgets(cfg.ThinkingBudgets),
 	}, nil
 }
 

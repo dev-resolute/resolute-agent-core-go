@@ -366,11 +366,12 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	}
 
 	req := llm.LLMRequest{
-		Model:         modelID,
-		Messages:      msgs,
-		Tools:         tools,
-		Thinking:      thinking,
-		ProviderHints: r.providerHints,
+		Model:           modelID,
+		Messages:        msgs,
+		Tools:           tools,
+		Thinking:        thinking,
+		ThinkingBudgets: snap.thinkingBudgets,
+		ProviderHints:   r.providerHints,
 	}
 
 	if r.agent.hooks.BeforeProviderRequest != nil {

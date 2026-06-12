@@ -30,6 +30,9 @@ type AgentConfig struct {
 	EventBufferSize  int
 	SteerBufferSize  int
 	DefaultThinking  llm.ThinkingLevel
+	// ThinkingBudgets optionally sets per-level token caps forwarded to the
+	// provider on every turn. Nil or empty means "use provider defaults".
+	ThinkingBudgets  map[llm.ThinkingLevel]int
 	ReserveTokens    int
 	KeepRecentTokens int
 }

@@ -10,11 +10,12 @@ import "github.com/resolute-sh/pi-llm-go"
 // active subset (see filterActiveTools), so an inactive tool is never offered to
 // the model nor executed.
 type turnSnapshot struct {
-	model         string
-	tools         []RegisteredTool
-	systemPrompt  string
-	thinkingLevel llm.ThinkingLevel
-	skills        []Skill
+	model           string
+	tools           []RegisteredTool
+	systemPrompt    string
+	thinkingLevel   llm.ThinkingLevel
+	thinkingBudgets map[llm.ThinkingLevel]int
+	skills          []Skill
 }
 
 // snapshot returns a turnSnapshot of the Agent's current runtime config.
@@ -27,10 +28,23 @@ func (a *Agent) snapshot() turnSnapshot {
 	copy(skills, a.skills)
 
 	return turnSnapshot{
-		model:         a.model,
-		tools:         tools,
-		systemPrompt:  a.systemPrompt,
-		thinkingLevel: a.thinkingLevel,
-		skills:        skills,
+		model:           a.model,
+		tools:           tools,
+		systemPrompt:    a.systemPrompt,
+		thinkingLevel:   a.thinkingLevel,
+		thinkingBudgets: cloneThinkingBudgets(a.thinkingBudgets),
+		skills:          skills,
 	}
+}
+
+// cloneThinkingBudgets returns a defensive copy of m. Nil in, nil out.
+func cloneThinkingBudgets(m map[llm.ThinkingLevel]int) map[llm.ThinkingLevel]int {
+	if m == nil {
+		return nil
+	}
+	out := make(map[llm.ThinkingLevel]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
