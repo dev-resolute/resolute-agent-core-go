@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/resolute-sh/pi-llm-go"
@@ -18,8 +19,9 @@ type recordingProvider struct {
 	emit      func(events chan<- llm.LLMEvent)
 	streamErr error
 
-	mu      sync.Mutex
-	lastReq llm.LLMRequest
+	mu           sync.Mutex
+	lastReq      llm.LLMRequest
+	streamCalls  atomic.Int32
 }
 
 func (p *recordingProvider) Name() string { return p.name }
@@ -29,6 +31,7 @@ func (p *recordingProvider) Capabilities(model string) llm.ProviderCapabilities 
 }
 
 func (p *recordingProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
+	p.streamCalls.Add(1)
 	p.mu.Lock()
 	p.lastReq = req
 	p.mu.Unlock()
@@ -54,6 +57,10 @@ func (p *recordingProvider) capturedReq() llm.LLMRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastReq
+}
+
+func (p *recordingProvider) streamCallCount() int {
+	return int(p.streamCalls.Load())
 }
 
 func newRecordingProvider(name string) *recordingProvider {

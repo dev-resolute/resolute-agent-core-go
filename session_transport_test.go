@@ -118,4 +118,10 @@ func TestErrTransportUnsupportedPropagation(t *testing.T) {
 	if !errors.Is(result.Err, llm.ErrTransportUnsupported) {
 		t.Errorf("result.Err = %v; want errors.Is(err, ErrTransportUnsupported) = true", result.Err)
 	}
+	if req := provider.capturedReq(); req.Transport != llm.TransportWebSocket {
+		t.Errorf("LLMRequest.Transport = %v, want TransportWebSocket", req.Transport)
+	}
+	if n := provider.streamCallCount(); n != 1 {
+		t.Errorf("Stream called %d time(s), want 1 (no retry on transport error)", n)
+	}
 }
