@@ -97,7 +97,7 @@ func TestPrepareArgumentsTypedTool(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		prepareArgs     func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error)
+		prepareArgs     PrepareArgumentsFunc
 		inputArgs       json.RawMessage
 		wantContent     string
 		wantErr         bool
