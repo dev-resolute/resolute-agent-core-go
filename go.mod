@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/resolute-sh/pi-llm-go v0.2.0
+	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 )
 
 require (

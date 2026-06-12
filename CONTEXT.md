@@ -34,6 +34,16 @@
 
 **active_tools_change**: Bookkeeping transcript `Message` (`Type: "active_tools_change"`, `Body: {"activeToolNames":[...]}`) recording a change to the active set. It is never sent to the model (excluded by `BuildLLMContext` and `DefaultConvertToLLM`) and is never a compaction cut point. On resume, the active set is restored by scanning for the last such entry (absent ⇒ all tools active). The empty-vs-nil distinction is load-bearing and preserved end-to-end: a recorded empty set (`[]`) means *no* tools active and resumes as such, whereas a recorded nil (`null`) or an absent entry means *all* tools active — so the bind-time record must keep an empty set empty, not collapse it to nil. Restored names are validated lazily, not on restore: a name the current registry no longer registers (the tool set may differ between runs) is silently dropped by `filterActiveTools` at snapshot time, and if every restored name is stale the model is offered zero tools. When a session is bound, `SetActiveTools` persists immediately (idle) or via a deferral queue flushed at the turn-end safe point (mid-prompt); the queue is also drained on every prompt-exit path (success, error, cancellation) so no entry is stranded or leaked into a later prompt's session. Before the first prompt nothing is written, and the active set is recorded at session-bind time if it differs from the full registered set.
 
+### Skills
+
+**Skill**: A unit of model-invokable expertise carried on the Agent (`Name`, `Description`, `Content`, `FilePath`, `DisableModelInvocation`). Part of the mutable runtime config (`AgentConfig.Skills` / `Agent.SetSkills`) and the turn snapshot.
+
+**Skill index**: The model-visible XML block (`<available_skills>` of `<skill>` entries carrying `<name>`/`<description>`/`<location>` — never `Content`) rendered by `formatSkillsForSystemPrompt`. Skills with `DisableModelInvocation` are excluded; with no model-visible skills it renders the empty string. It is auto-attached to the effective system prompt **per turn** (in the derived `[]llm.Message`, not the persisted transcript), so `SetSkills` is reflected on the next turn and the index never leaks into session storage.
+
+**Content-reader contract**: The framework ships no tool that reads a skill's `FilePath`; the index exposes only name/description/location, and the model fetches a skill's full instructions on demand through a user-supplied tool that resolves `FilePath`.
+
+**piskills**: Opt-in subpackage (`github.com/resolute-sh/pi-core-agent-go/piskills`) whose `Load(dir)` walks `SKILL.md` files, parses frontmatter (`name`, `description`, `disable-model-invocation`), honors `.gitignore`/`.ignore`, and returns skills plus `Diagnostic`s for malformed entries. A directory with a `SKILL.md` is a skill leaf (not descended into). Core never imports it, so importing core pulls in no filesystem/skill-loading code.
+
 ### Events
 
 **AgentEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.

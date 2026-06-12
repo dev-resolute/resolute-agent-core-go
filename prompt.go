@@ -406,6 +406,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 		}
 		msgs = r.agent.config.ConvertToLLM(transformed)
 	}
+	msgs = applySkillsToSystemPrompt(msgs, snap.skills)
 
 	tools := make([]llm.ToolDef, len(snap.tools))
 	for i, t := range snap.tools {
