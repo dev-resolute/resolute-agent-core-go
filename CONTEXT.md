@@ -70,4 +70,4 @@
 
 **Single-runner Agent**: One `Agent` corresponds to one session/conversation; at most one prompt in flight at a time. Runtime config is mutable via setters and picked up on the next turn snapshot. Concurrent users get N Agents, not one Agent shared across N runs. Reverses the v0.1.x "Multi-runner Agent" invariant (ADR-0006).
 
-**Goroutine-safety contract**: `Tool.Execute`, hooks, `ConvertToLLM`, and `SessionRepo` implementations must be safe for concurrent invocation. Setters on `*Agent` are also concurrent-safe.
+**Goroutine-safety contract**: `Tool.Execute`, hooks, `ConvertToLLM`, and `SessionRepo` implementations must be safe for concurrent invocation. Setters on `*Agent` are also concurrent-safe. `OnConfigUpdate` fires after the setter releases the Agent mutex, so the hook may safely call getters; however, it may observe a newer Agent state than the captured `ConfigUpdateCtx.Old*`/`New*` values if another setter races in between.
