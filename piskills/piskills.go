@@ -178,6 +178,7 @@ func loadSkillFile(path string) (*pi.Skill, []Diagnostic) {
 func parseFrontmatter(content string) (map[string]string, string) {
 	normalized := strings.ReplaceAll(content, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = strings.TrimPrefix(normalized, "\uFEFF")
 
 	frontmatter := map[string]string{}
 	if !strings.HasPrefix(normalized, "---") {

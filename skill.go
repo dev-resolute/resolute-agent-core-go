@@ -19,10 +19,23 @@ import (
 // for the host application; populating it does not make the framework deliver it
 // to the model.
 type Skill struct {
-	Name                   string
-	Description            string
-	Content                string
-	FilePath               string
+	// Name is the model-visible identifier rendered into the skill index.
+	// When omitted from the SKILL.md frontmatter it defaults to the parent
+	// directory name.
+	Name string
+	// Description is the one-line summary shown to the model in the skill
+	// index. It is required; a skill without one is rejected with a Diagnostic.
+	Description string
+	// Content holds the full text of the SKILL.md body. The framework does
+	// not deliver this to the model automatically; the host application must
+	// supply a tool that resolves FilePath so the model can fetch it on demand.
+	Content string
+	// FilePath is the absolute path to the SKILL.md file. It is included in
+	// the model-visible index so the model can request the file via a
+	// host-supplied file-reader tool.
+	FilePath string
+	// DisableModelInvocation excludes the skill from the model-visible index
+	// when true. The skill remains accessible to the host application.
 	DisableModelInvocation bool
 }
 

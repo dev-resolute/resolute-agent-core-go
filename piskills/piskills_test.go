@@ -217,6 +217,28 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			name: "BOM-prefixed SKILL.md loads successfully",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "bom-skill", "SKILL.md"),
+					"\uFEFF---\nname: bom-skill\ndescription: skill with BOM\n---\nbody here")
+			},
+			check: func(t *testing.T, root string, skills []pi.Skill, diags []Diagnostic, err error) {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				if len(diags) != 0 {
+					t.Errorf("diagnostics = %v, want none", diags)
+				}
+				s, ok := findSkill(skills, "bom-skill")
+				if !ok {
+					t.Fatalf("BOM-prefixed skill not loaded; got %v", skills)
+				}
+				if s.Description != "skill with BOM" {
+					t.Errorf("Description = %q, want %q", s.Description, "skill with BOM")
+				}
+			},
+		},
+		{
 			name: "skill directory is a leaf and nested skills are not recursed",
 			setup: func(t *testing.T, root string) {
 				writeFile(t, filepath.Join(root, "outer", "SKILL.md"),
