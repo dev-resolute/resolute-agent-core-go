@@ -18,6 +18,14 @@ type Hooks struct {
 	BeforeProviderRequest func(ctx context.Context, c BeforeProviderRequestCtx) error
 	AfterProviderResponse func(ctx context.Context, c AfterProviderResponseCtx)
 
+	// ShouldStopAfterTurn is called at each turn boundary — after turn_end is
+	// emitted and tool results are flushed to the session, before the
+	// steer/follow-up queues are polled or the next LLM call starts. When it
+	// returns true the loop exits with a clean, nil-error PromptResult. Nil is
+	// a no-op. Matches upstream pi 0.72.0 shouldStopAfterTurn decision-point
+	// semantics.
+	ShouldStopAfterTurn func(ctx context.Context, c AfterTurnCtx) bool
+
 	// OnConfigUpdate is called synchronously by each setter (SetModel,
 	// SetThinkingLevel, SetTools, SetSystemPrompt, SetSkills, SetActiveTools)
 	// after the new
@@ -117,4 +125,12 @@ type AfterProviderResponseCtx struct {
 	Model      string
 	StatusCode int
 	Headers    map[string]string
+}
+
+// AfterTurnCtx is passed to the ShouldStopAfterTurn hook.
+type AfterTurnCtx struct {
+	// Turn is the 1-based index of the turn that just completed.
+	Turn int
+	// HadToolCalls reports whether the LLM returned tool calls this turn.
+	HadToolCalls bool
 }

@@ -203,7 +203,8 @@ func (r *promptRun) loop(ctx context.Context) {
 	}
 
 	for {
-		if err := r.runOneTurn(ctx); err != nil {
+		hadToolCalls, err := r.runOneTurn(ctx)
+		if err != nil {
 			if errors.Is(err, ErrAgentStopped) || errors.Is(err, ErrPromptCancelled) {
 				r.setPhase(PhaseShuttingDown)
 				time.After(r.agent.config.ShutdownTimeout)
@@ -233,6 +234,20 @@ func (r *promptRun) loop(ctx context.Context) {
 			return
 		}
 
+		// Turn boundary: check before steer/follow-up queue poll and next LLM
+		// call. Matches upstream pi 0.72.0 shouldStopAfterTurn decision point.
+		if r.agent.hooks.ShouldStopAfterTurn != nil {
+			if r.agent.hooks.ShouldStopAfterTurn(ctx, AfterTurnCtx{
+				Turn:         r.turn,
+				HadToolCalls: hadToolCalls,
+			}) {
+				r.setPhase(PhaseDone)
+				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
+				return
+			}
+		}
+
 		select {
 		case fu := <-r.followUpCh:
 			if err := r.appendTranscript(ctx, fu); err != nil {
@@ -257,8 +272,9 @@ func (r *promptRun) loop(ctx context.Context) {
 	}
 }
 
-// runOneTurn executes a single LLM → tools → result turn.
-func (r *promptRun) runOneTurn(ctx context.Context) error {
+// runOneTurn executes a single LLM → tools → result turn. It returns whether
+// this turn produced any tool calls, which the loop passes to ShouldStopAfterTurn.
+func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	r.setPhase(PhaseWaitingLLM)
 	r.turn++
 	r.emit(TurnStartEvent{Turn: r.turn})
@@ -266,13 +282,13 @@ func (r *promptRun) runOneTurn(ctx context.Context) error {
 	select {
 	case sm := <-r.steerCh:
 		if err := r.appendTranscript(ctx, sm.msg); err != nil {
-			return err
+			return false, err
 		}
 		r.emit(MessageStartEvent{Role: "user", MessageType: "text"})
 		r.emit(SteerInjectedEvent{Message: sm.msg})
 		close(sm.injected)
 	case <-ctx.Done():
-		return context.Cause(ctx)
+		return false, context.Cause(ctx)
 	default:
 	}
 
@@ -286,11 +302,11 @@ func (r *promptRun) runOneTurn(ctx context.Context) error {
 	}
 	providerName, modelID, err := parseModelRef(modelRef)
 	if err != nil {
-		return err
+		return false, err
 	}
 	provider, err := r.agent.providerByName(providerName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	thinking := r.optThinking
 	if thinking == llm.ThinkingOff {
@@ -306,7 +322,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) error {
 	if r.agent.hooks.TransformContext != nil {
 		transformed, err := r.agent.hooks.TransformContext(ctx, TransformContextCtx{Messages: contextMsgs})
 		if err != nil {
-			return fmt.Errorf("transform context hook: %w", err)
+			return false, fmt.Errorf("transform context hook: %w", err)
 		}
 		msgs = r.agent.config.ConvertToLLM(transformed)
 	}
@@ -394,7 +410,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) error {
 			if e.Transient {
 				r.emit(LLMErrorEvent{Error: e.Error, Transient: true})
 			} else {
-				return fmt.Errorf("llm error: %w", e.Error)
+				return false, fmt.Errorf("llm error: %w", e.Error)
 			}
 		case llm.LLMRetryEvent:
 			r.emit(LLMRetryEvent{
@@ -417,32 +433,31 @@ func (r *promptRun) runOneTurn(ctx context.Context) error {
 
 	result := <-stream.Done
 	if result.Err != nil {
-		return fmt.Errorf("llm stream: %w", result.Err)
+		return false, fmt.Errorf("llm stream: %w", result.Err)
 	}
 
 	if assistantText.Len() > 0 {
 		assistantMsg = NewText("assistant", assistantText.String())
 		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, tc := range toolCalls {
 		assistantMsg = NewToolCall("assistant", tc.CallID, tc.ToolName, tc.Args)
 		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	r.emit(TurnEndEvent{Turn: r.turn})
 
-	if len(toolCalls) > 0 {
+	hadToolCalls := len(toolCalls) > 0
+	if hadToolCalls {
 		if err := r.executeTools(ctx, toolCalls, snap.tools); err != nil {
-			return err
+			return false, err
 		}
-		return nil
 	}
-
-	return nil
+	return hadToolCalls, nil
 }
 
 func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallContent, tools []RegisteredTool) error {
