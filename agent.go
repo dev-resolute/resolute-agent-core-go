@@ -11,6 +11,15 @@ import (
 	"github.com/resolute-sh/pi-llm-go"
 )
 
+// idleCtx is returned by Agent.Context when no prompt is in flight. It is
+// pre-cancelled with ErrNoPromptInFlight so that any goroutine blocking on
+// its Done channel unblocks immediately rather than leaking.
+var idleCtx = func() context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrNoPromptInFlight)
+	return ctx
+}()
+
 // Agent is the persistent, configurable object that owns tools, hooks,
 // the session backend, default options, and the system prompt.
 type Agent struct {
@@ -186,8 +195,12 @@ func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*Even
 	}
 
 	// Set up internal context so Stop() works even before loop() starts.
+	// ctx is also stored for Agent.Context(), which exposes it as a lifecycle
+	// accessor. Both fields are co-guarded by cancelMu and set before
+	// a.current = pr becomes visible to other goroutines.
 	innerCtx, cancel := context.WithCancelCause(ctx)
 	pr.cancelMu.Lock()
+	pr.ctx = innerCtx
 	pr.cancel = cancel
 	pr.cancelMu.Unlock()
 
@@ -209,6 +222,36 @@ func (a *Agent) Stop() {
 	if pr != nil {
 		pr.stop()
 	}
+}
+
+// Context returns the in-flight prompt's context. Tools and hooks can use it
+// to forward cancellation into nested goroutines they spawn: when Stop is
+// called (or the caller's context is cancelled), the returned context is
+// cancelled with the same cause, and any goroutine blocking on its Done
+// channel unblocks.
+//
+// Idle contract: when no prompt is in flight, Context returns a non-nil,
+// already-cancelled context with cause ErrNoPromptInFlight. Callers that
+// hold a reference across a prompt boundary should not start new work from
+// it — its Done channel is already closed.
+//
+// Concurrent-safe: safe to call from any goroutine while a prompt is
+// starting, running, or stopping.
+func (a *Agent) Context() context.Context {
+	if !a.isRunning() {
+		return idleCtx
+	}
+	pr := a.currentPrompt()
+	if pr == nil {
+		return idleCtx
+	}
+	pr.cancelMu.Lock()
+	ctx := pr.ctx
+	pr.cancelMu.Unlock()
+	if ctx == nil {
+		return idleCtx
+	}
+	return ctx
 }
 
 // Steer enqueues a message for injection into the in-flight prompt at the next

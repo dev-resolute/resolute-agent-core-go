@@ -45,6 +45,11 @@ type promptRun struct {
 	startedAt      time.Time
 	lastActivityAt time.Time
 
+	// ctx is the inner prompt context derived from the caller's context via
+	// context.WithCancelCause. It is stored here so Agent.Context() can
+	// expose it as a lifecycle accessor. Stored alongside cancel under
+	// cancelMu; set in Agent.Prompt before loop() starts.
+	ctx      context.Context
 	cancel   context.CancelCauseFunc
 	cancelMu sync.Mutex
 }
