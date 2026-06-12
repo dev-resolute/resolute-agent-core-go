@@ -19,9 +19,9 @@ type recordingProvider struct {
 	emit      func(events chan<- llm.LLMEvent)
 	streamErr error
 
-	mu           sync.Mutex
-	lastReq      llm.LLMRequest
-	streamCalls  atomic.Int32
+	mu          sync.Mutex
+	lastReq     llm.LLMRequest
+	streamCalls atomic.Int32
 }
 
 func (p *recordingProvider) Name() string { return p.name }
