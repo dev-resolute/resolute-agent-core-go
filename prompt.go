@@ -227,6 +227,18 @@ func (r *promptRun) loop(ctx context.Context) {
 			return
 		}
 
+		// Evaluate the predicate on every completed turn, including terminate
+		// turns, matching upstream shouldStopAfterTurn side-effect semantics.
+		// The return value is only acted on for non-terminate turns; terminate
+		// exits unconditionally regardless of the predicate's answer.
+		stopAfterTurn := false
+		if r.agent.hooks.ShouldStopAfterTurn != nil {
+			stopAfterTurn = r.agent.hooks.ShouldStopAfterTurn(ctx, AfterTurnCtx{
+				Turn:         r.turn,
+				HadToolCalls: hadToolCalls,
+			})
+		}
+
 		if r.terminated {
 			r.setPhase(PhaseDone)
 			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
@@ -234,18 +246,11 @@ func (r *promptRun) loop(ctx context.Context) {
 			return
 		}
 
-		// Turn boundary: check before steer/follow-up queue poll and next LLM
-		// call. Matches upstream pi 0.72.0 shouldStopAfterTurn decision point.
-		if r.agent.hooks.ShouldStopAfterTurn != nil {
-			if r.agent.hooks.ShouldStopAfterTurn(ctx, AfterTurnCtx{
-				Turn:         r.turn,
-				HadToolCalls: hadToolCalls,
-			}) {
-				r.setPhase(PhaseDone)
-				r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
-				r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
-				return
-			}
+		if stopAfterTurn {
+			r.setPhase(PhaseDone)
+			r.emit(AgentEndEvent{Messages: r.transcriptCopy()})
+			r.done <- PromptResult{Messages: r.transcriptCopy(), Err: nil}
+			return
 		}
 
 		select {

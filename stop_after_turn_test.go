@@ -96,6 +96,79 @@ func TestShouldStopAfterTurn(t *testing.T) {
 	}
 }
 
+// TestShouldStopAfterTurnInvokedOnTerminate verifies that a ShouldStopAfterTurn
+// predicate is invoked even when a tool returns Terminate=true, with the correct
+// AfterTurnCtx (HadToolCalls=true), and that the prompt exits cleanly (Err==nil).
+func TestShouldStopAfterTurnInvokedOnTerminate(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		captured AfterTurnCtx
+		invoked  bool
+	)
+
+	terminateTool := NewTool(Tool[struct{}]{
+		Name:        "stop",
+		Description: "stop",
+		Execute: func(ctx context.Context, _ struct{}) (ToolResult, error) {
+			return ToolResult{Terminate: true}, nil
+		},
+	})
+
+	provider := &stubProvider{
+		name: "test",
+		emit: func(events chan<- llm.LLMEvent) {
+			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "stop", Args: []byte("{}")}
+			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{terminateTool},
+		Hooks: Hooks{
+			ShouldStopAfterTurn: func(_ context.Context, c AfterTurnCtx) bool {
+				mu.Lock()
+				captured = c
+				invoked = true
+				mu.Unlock()
+				return false
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, result := drain(t, stream)
+
+	if result.Err != nil {
+		t.Errorf("unexpected error: %v", result.Err)
+	}
+
+	mu.Lock()
+	c := captured
+	wasInvoked := invoked
+	mu.Unlock()
+
+	if !wasInvoked {
+		t.Fatal("ShouldStopAfterTurn was not invoked on a terminate turn")
+	}
+	if c.Turn != 1 {
+		t.Errorf("AfterTurnCtx.Turn = %d, want 1", c.Turn)
+	}
+	if !c.HadToolCalls {
+		t.Errorf("AfterTurnCtx.HadToolCalls = false, want true")
+	}
+}
+
 // TestShouldStopAfterTurnContext verifies that the AfterTurnCtx passed to the
 // hook carries the correct turn number and tool-call flag.
 func TestShouldStopAfterTurnContext(t *testing.T) {
