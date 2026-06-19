@@ -10,7 +10,9 @@ import (
 type ToolExecutionMode int
 
 const (
+	// ToolExecParallel runs a turn's tool calls concurrently. It is the zero value and the default.
 	ToolExecParallel ToolExecutionMode = iota
+	// ToolExecSequential runs a turn's tool calls one at a time, in the order the model requested them.
 	ToolExecSequential
 )
 

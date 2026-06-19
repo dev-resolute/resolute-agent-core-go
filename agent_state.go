@@ -10,11 +10,17 @@ import (
 type AgentPhase int
 
 const (
+	// PhaseIdle is the agent's phase at construction and between prompts, with no prompt in flight.
 	PhaseIdle AgentPhase = iota
+	// PhaseWaitingLLM means the run is blocked on a model response.
 	PhaseWaitingLLM
+	// PhaseExecutingTools means the run is executing tool calls requested by the model.
 	PhaseExecutingTools
+	// PhaseCompacting means the run is compacting the transcript to reclaim context window.
 	PhaseCompacting
+	// PhaseShuttingDown means the run is draining in-flight work after a stop.
 	PhaseShuttingDown
+	// PhaseDone means the prompt has finished.
 	PhaseDone
 )
 

@@ -45,12 +45,18 @@ type Hooks struct {
 type ConfigField string
 
 const (
-	ConfigFieldModel         ConfigField = "model"
+	// ConfigFieldModel reports a SetModel change.
+	ConfigFieldModel ConfigField = "model"
+	// ConfigFieldThinkingLevel reports a SetThinkingLevel change.
 	ConfigFieldThinkingLevel ConfigField = "thinking_level"
-	ConfigFieldTools         ConfigField = "tools"
-	ConfigFieldSystemPrompt  ConfigField = "system_prompt"
-	ConfigFieldSkills        ConfigField = "skills"
-	ConfigFieldActiveTools   ConfigField = "active_tools"
+	// ConfigFieldTools reports a SetTools change.
+	ConfigFieldTools ConfigField = "tools"
+	// ConfigFieldSystemPrompt reports a SetSystemPrompt change.
+	ConfigFieldSystemPrompt ConfigField = "system_prompt"
+	// ConfigFieldSkills reports a SetSkills change.
+	ConfigFieldSkills ConfigField = "skills"
+	// ConfigFieldActiveTools reports a SetActiveTools change.
+	ConfigFieldActiveTools ConfigField = "active_tools"
 )
 
 // ConfigUpdateCtx is passed to the OnConfigUpdate hook.

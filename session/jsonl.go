@@ -1,3 +1,5 @@
+// Package session provides pi.SessionRepo implementations for persisting agent
+// transcripts: a JSONL file-backed store and an in-memory store.
 package session
 
 import (
