@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - 2026-06-26
+
+Bumps the `pi-llm-go` dependency v0.2.0 → v0.5.0, adopting the upstream 0.79.10 re-diff
+fixes for the agent's LLM layer. No changes to pi-core-agent-go's own API — existing callers
+compile and behave identically, with corrected and expanded provider behaviour underneath.
+
+### Changed
+
+- **`pi-llm-go` v0.2.0 → v0.5.0.** Pulls in:
+  - **Gemini 3 correctness + streaming fix** (pi-llm-go v0.3.0, LLM-5): capabilities and thinking
+    config now derive by generation (Gemini 3.x / Gemma 4 use `thinkingLevel`), `IncludeThoughts`
+    surfaces reasoning, and the stream loop no longer drops or garbles multi-chunk responses —
+    which affected all Gemini models, including the `gemini-2.5-flash` the live agent suite uses.
+  - **Gemini Vertex AI backend** (pi-llm-go v0.3.0): `gemini.Config` ADC / Workload-Identity path.
+  - **OpenAI-compat `Compat` + `deepseek`/`chat-template` thinking formats** (pi-llm-go v0.4.0/v0.5.0,
+    LLM-6/LLM-7): DeepSeek V4 on opencode-go and Qwen3/DeepSeek-R1 behind vLLM.
+  - **`ErrContextOverflow` detection** (pi-llm-go v0.5.0, LLM-8): `errors.Is`-matchable seam for
+    the deferred auto-compaction story (ADR-0003).
+
 ## [0.2.0] - 2026-05-28
 
 Tracks upstream pi-agent-core 0.79.1.
