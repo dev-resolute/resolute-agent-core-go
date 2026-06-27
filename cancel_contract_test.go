@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // TestCallerCtxCancellation_HonoringTool pins the ADR-0004 contract: when the

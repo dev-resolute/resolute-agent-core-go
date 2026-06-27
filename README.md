@@ -15,7 +15,7 @@ Stateful agent loop for Go, built on `pi-llm-go`.
 ## Install
 
 ```bash
-go get github.com/resolute-sh/pi-core-agent-go
+go get github.com/dev-resolute/resolute-agent-core-go
 ```
 
 ## Usage

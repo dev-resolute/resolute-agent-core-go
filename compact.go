@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // SummarizationSystemPrompt is the system prompt used for summarization calls.

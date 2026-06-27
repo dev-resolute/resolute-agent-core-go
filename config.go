@@ -3,7 +3,7 @@ package pi
 import (
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // ToolExecutionMode controls whether tools execute in parallel or serially.

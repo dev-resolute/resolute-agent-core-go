@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // recordingProvider captures the LLMRequest received by Stream so tests can

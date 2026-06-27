@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // stubProviderOnce wraps stubProvider so the first Stream call emits a tool

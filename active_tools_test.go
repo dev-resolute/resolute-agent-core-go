@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 var errStubBoom = errors.New("stub provider boom")

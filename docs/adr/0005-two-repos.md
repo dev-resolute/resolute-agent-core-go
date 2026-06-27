@@ -3,6 +3,11 @@
 Date: 2026-05-25
 Status: Accepted
 
+> **Rebrand note (2026-06-27):** the two-repos decision stands; only the names/org changed.
+> `resolute-sh/pi-llm-go` → `dev-resolute/resolute-llm-go`, `resolute-sh/pi-core-agent-go` →
+> `dev-resolute/resolute-agent-core-go`. The paths in this ADR's body are retained as the
+> historical record. See `docs/prds/resolute-rebrand-rediff-0.80.2-providers.md`.
+
 ## Context
 
 Q14 considered three module-layout options: (A) single Go module with subpackages, (B) two modules in one repo coordinated via `go.work`, (C) two separate repositories. The recommendation was B for its low coordination cost and matching of upstream Pi's separate-package model without the operational overhead of two repos.

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/resolute-sh/pi-core-agent-go"
+	"github.com/dev-resolute/resolute-agent-core-go"
 )
 
 var _ pi.SessionRepo = (*MemorySession)(nil)

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func systemText(t *testing.T, req llm.LLMRequest) string {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // SetModel sets the model reference used for subsequent turns. The change takes

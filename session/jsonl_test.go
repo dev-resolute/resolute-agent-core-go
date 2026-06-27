@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/resolute-sh/pi-core-agent-go"
+	"github.com/dev-resolute/resolute-agent-core-go"
 )
 
 func TestJSONLSessionCRUD(t *testing.T) {

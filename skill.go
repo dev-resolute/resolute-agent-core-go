@@ -3,7 +3,7 @@ package pi
 import (
 	"strings"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // Skill is a unit of model-invokable expertise carried on the Agent. It is part

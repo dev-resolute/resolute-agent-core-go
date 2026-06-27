@@ -16,7 +16,7 @@ import (
 
 	gitignore "github.com/sabhiram/go-gitignore"
 
-	pi "github.com/resolute-sh/pi-core-agent-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 const skillFileName = "SKILL.md"

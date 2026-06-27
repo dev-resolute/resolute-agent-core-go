@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 func TestTurnSnapshotSettersAndIsolation(t *testing.T) {

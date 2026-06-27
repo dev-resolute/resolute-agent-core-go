@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // newAgentWithHook creates an Agent whose OnConfigUpdate hook appends each call

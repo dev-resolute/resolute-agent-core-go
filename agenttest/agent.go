@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/resolute-sh/pi-core-agent-go"
-	"github.com/resolute-sh/pi-core-agent-go/session"
-	"github.com/resolute-sh/pi-llm-go"
-	"github.com/resolute-sh/pi-llm-go/gemini"
+	"github.com/dev-resolute/resolute-agent-core-go"
+	"github.com/dev-resolute/resolute-agent-core-go/session"
+	"github.com/dev-resolute/resolute-llm-go"
+	"github.com/dev-resolute/resolute-llm-go/gemini"
 )
 
 const testModel = "gemini/gemini-2.5-flash"

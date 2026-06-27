@@ -42,7 +42,7 @@
 
 **Content-reader contract**: The framework ships no tool that reads a skill's `FilePath`; the index exposes only name/description/location, and the model fetches a skill's full instructions on demand through a user-supplied tool that resolves `FilePath`.
 
-**piskills**: Opt-in subpackage (`github.com/resolute-sh/pi-core-agent-go/piskills`) whose `Load(dir)` walks `SKILL.md` files, parses frontmatter (`name`, `description`, `disable-model-invocation`), honors `.gitignore`/`.ignore`, and returns skills plus `Diagnostic`s for malformed entries. A directory with a `SKILL.md` is a skill leaf (not descended into). Core never imports it, so importing core pulls in no filesystem/skill-loading code.
+**piskills**: Opt-in subpackage (`github.com/dev-resolute/resolute-agent-core-go/piskills`) whose `Load(dir)` walks `SKILL.md` files, parses frontmatter (`name`, `description`, `disable-model-invocation`), honors `.gitignore`/`.ignore`, and returns skills plus `Diagnostic`s for malformed entries. A directory with a `SKILL.md` is a skill leaf (not descended into). Core never imports it, so importing core pulls in no filesystem/skill-loading code.
 
 ### Events
 

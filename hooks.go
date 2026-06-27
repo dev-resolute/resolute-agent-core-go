@@ -3,7 +3,7 @@ package pi
 import (
 	"context"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // Hooks is a flat struct of optional function fields covering every lifecycle point.

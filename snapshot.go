@@ -3,7 +3,7 @@ package pi
 import (
 	"maps"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // turnSnapshot is the immutable copy of the Agent's runtime config used to

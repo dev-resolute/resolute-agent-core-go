@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-06-27
+
+### Changed
+
+- **Module path changed to `github.com/dev-resolute/resolute-agent-core-go`** (was
+  `github.com/resolute-sh/pi-core-agent-go`), part of the `resolute-sh`→`dev-resolute` rebrand
+  (note the name flip: *core-agent* → *agent-core*). Update your import path:
+  `go get github.com/dev-resolute/resolute-agent-core-go`.
+- **Dependency repointed to `github.com/dev-resolute/resolute-llm-go v0.6.0`** (was
+  `github.com/resolute-sh/pi-llm-go v0.5.0`) — same code under the renamed module identity.
+- **No behaviour change** — pure module-path rename + dependency repoint; the full test suite
+  passes unchanged. ADR-0005 carries a rebrand note. Set `GOPRIVATE` to include
+  `github.com/dev-resolute/*` to resolve the private dependency.
+
 ## [0.3.0] - 2026-06-26
 
 Bumps the `pi-llm-go` dependency v0.2.0 → v0.5.0, adopting the upstream 0.79.10 re-diff

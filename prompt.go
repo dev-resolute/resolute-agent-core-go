@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // PromptResult is the terminal value delivered on EventStream.Done.

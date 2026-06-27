@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // echoParams is the argument shape for the echo tool used by the v0.76 loop

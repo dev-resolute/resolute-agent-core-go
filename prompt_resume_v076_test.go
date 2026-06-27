@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/resolute-sh/pi-llm-go"
+	"github.com/dev-resolute/resolute-llm-go"
 )
 
 // Fix (upstream 0.52.7): queued steering/follow-up messages resume correctly when

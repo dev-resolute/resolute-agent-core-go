@@ -1,10 +1,10 @@
-module github.com/resolute-sh/pi-core-agent-go
+module github.com/dev-resolute/resolute-agent-core-go
 
 go 1.24
 
 require (
+	github.com/dev-resolute/resolute-llm-go v0.6.0
 	github.com/invopop/jsonschema v0.14.0
-	github.com/resolute-sh/pi-llm-go v0.5.0
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 )
 

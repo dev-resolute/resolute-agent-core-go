@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resolute-sh/pi-llm-go"
-	"github.com/resolute-sh/pi-llm-go/gemini"
+	"github.com/dev-resolute/resolute-llm-go"
+	"github.com/dev-resolute/resolute-llm-go/gemini"
 )
 
 const testModel = "gemini/gemini-2.5-flash"
