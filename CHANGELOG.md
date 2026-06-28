@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0] - 2026-06-28
+
+### Added
+
+- **Six OpenAI-compatible providers reachable through the agent (AGENT-16).** Bumps the
+  `resolute-llm-go` dependency v0.6.0 → **v0.7.0**, which adds xAI, Mistral, Qwen, and z.ai as named
+  `openai-compat` instances alongside OpenAI and OpenCode Zen. No agent-core code change was needed —
+  the provider registry (`AgentConfig.Providers`, resolution by `<provider>/<model>` ref) is already
+  generic; this release is the dependency bump plus proof it carries the new targets. A registry test
+  asserts Gemini and all four LLM-10 compat providers (distinct `Name`s) each resolve by ref, and
+  `examples/providers` wires a seven-provider agent (Gemini + the six compat targets), each registered
+  when its API key is present.
+
+### Changed
+
+- **`resolute-llm-go` v0.6.0 → v0.7.0** (the four new providers + `openaicompat.Config.Name`). Both
+  repos are now public, so the dependency resolves over plain `go get` — the `GOPRIVATE` workaround
+  noted in v0.4.0 is no longer required.
+
 ## [0.4.0] - 2026-06-27
 
 ### Changed
