@@ -483,9 +483,10 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 			r.emit(ThinkingDeltaEvent{Delta: e.Delta})
 		case llm.ToolCallStartEvent:
 			toolCalls = append(toolCalls, llm.ToolCallContent{
-				CallID:   e.CallID,
-				ToolName: e.ToolName,
-				Args:     e.Args,
+				CallID:           e.CallID,
+				ToolName:         e.ToolName,
+				Args:             e.Args,
+				ThoughtSignature: e.ThoughtSignature,
 			})
 			r.emit(ToolCallStartEvent{CallID: e.CallID, ToolName: e.ToolName, Args: e.Args})
 		case llm.LLMErrorEvent:
@@ -525,7 +526,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 		}
 	}
 	for _, tc := range toolCalls {
-		assistantMsg = NewToolCall("assistant", tc.CallID, tc.ToolName, tc.Args)
+		assistantMsg = NewToolCallWithSignature("assistant", tc.CallID, tc.ToolName, tc.Args, tc.ThoughtSignature)
 		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
 			return false, err
 		}

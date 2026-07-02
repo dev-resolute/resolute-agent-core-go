@@ -27,6 +27,22 @@ func NewToolCall(role string, callID, toolName string, args json.RawMessage) Mes
 	return Message{Role: role, Type: "tool_call", Body: body}
 }
 
+// NewToolCallWithSignature creates a tool call message that also persists the
+// provider's opaque thought signature (Gemini 3), so replaying the transcript
+// carries it back verbatim. A nil signature is equivalent to NewToolCall.
+func NewToolCallWithSignature(role string, callID, toolName string, args json.RawMessage, thoughtSignature []byte) Message {
+	if len(thoughtSignature) == 0 {
+		return NewToolCall(role, callID, toolName, args)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"call_id":           callID,
+		"tool_name":         toolName,
+		"args":              args,
+		"thought_signature": thoughtSignature,
+	})
+	return Message{Role: role, Type: "tool_call", Body: body}
+}
+
 // NewToolResult creates a tool result message.
 func NewToolResult(role string, callID, toolName, content string, data json.RawMessage, isError bool) Message {
 	body, _ := json.Marshal(map[string]any{
@@ -105,6 +121,22 @@ func (m Message) ToolCall() (callID, toolName string, args json.RawMessage, ok b
 		return "", "", nil, false
 	}
 	return v.CallID, v.ToolName, v.Args, true
+}
+
+// ToolCallThoughtSignature extracts the provider's opaque thought signature
+// from a tool_call message. Nil when absent (pre-existing transcripts, providers
+// without signatures) or when the message is not a tool_call.
+func (m Message) ToolCallThoughtSignature() []byte {
+	if m.Type != "tool_call" {
+		return nil
+	}
+	var v struct {
+		ThoughtSignature []byte `json:"thought_signature"`
+	}
+	if err := json.Unmarshal(m.Body, &v); err != nil {
+		return nil
+	}
+	return v.ThoughtSignature
 }
 
 // ToolResult extracts fields from a tool_result message.

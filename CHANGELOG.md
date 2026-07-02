@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+> **Live validation:** full agent tool loop confirmed against live `gemini-3.1-pro-preview`
+> (`TestLiveGemini3AgentToolLoop`); without the round trip the auto-continued turn is rejected with
+> `400 INVALID_ARGUMENT: Function call is missing a thought_signature`.
+
+### Added
+
+- **Gemini 3 thought-signature round trip.** Bumps `resolute-llm-go` v0.7.0 -> **v0.8.0** (which
+  captures/replays Gemini 3 `thoughtSignature` on tool calls and fixes tool calls lost to chunk
+  layout) and threads the signature through the agent transcript so multi-turn tool loops work on
+  `gemini-3*` models: the prompt runner copies `ThoughtSignature` from `llm.ToolCallStartEvent`
+  into the persisted tool_call message, and `DefaultConvertToLLM` replays it onto the rebuilt
+  `llm.ToolCallContent`. New additive API: `NewToolCallWithSignature` (persists the signature in
+  the tool_call body as `thought_signature`; nil-signature equivalent to `NewToolCall`) and
+  `Message.ToolCallThoughtSignature()` (nil when absent -- pre-existing transcripts keep working).
+  Custom `ConvertToLLM` implementations replaying tool calls to Gemini 3 must do the same.
+
 ## [0.5.0] - 2026-06-28
 
 ### Added
