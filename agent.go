@@ -422,9 +422,10 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 				out = append(out, llm.Message{
 					Role: "assistant",
 					Content: llm.ToolCallContent{
-						CallID:   callID,
-						ToolName: toolName,
-						Args:     args,
+						CallID:           callID,
+						ToolName:         toolName,
+						Args:             args,
+						ThoughtSignature: msg.ToolCallThoughtSignature(),
 					},
 				})
 			}
