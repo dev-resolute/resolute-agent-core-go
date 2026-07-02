@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-07-01
 
 > **Live validation:** full agent tool loop confirmed against live `gemini-3.1-pro-preview`
 > (`TestLiveGemini3AgentToolLoop`); without the round trip the auto-continued turn is rejected with
