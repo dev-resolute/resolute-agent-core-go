@@ -122,6 +122,12 @@ type CompactionSettings struct {
 // CompactOpts carries options for a compaction operation.
 type CompactOpts struct {
 	KeepRecentTokens int
+	// SessionID selects the session to compact. Empty means the session
+	// bound by the most recent prompt — which is also empty on an Agent
+	// that has never prompted, making Compact a silent no-op there; set
+	// SessionID explicitly to compact such a session (e.g. a harness
+	// compacting a durable conversation with a fresh Agent).
+	SessionID SessionID
 }
 
 // DefaultCompactionSettings matches upstream's DEFAULT_COMPACTION_SETTINGS.
@@ -232,7 +238,10 @@ func (a *Agent) Compact(ctx context.Context, opts CompactOpts) (*CompactResult, 
 		settings.KeepRecentTokens = opts.KeepRecentTokens
 	}
 
-	sid := a.sessionIDFromConfigOrLastRun()
+	sid := opts.SessionID
+	if sid == "" {
+		sid = a.sessionIDFromConfigOrLastRun()
+	}
 	if sid == "" {
 		// No session to compact.
 		return &CompactResult{}, nil

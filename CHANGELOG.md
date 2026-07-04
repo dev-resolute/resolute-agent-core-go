@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.1] - 2026-07-04
+
+### Added
+
+- **`CompactOpts.SessionID`** (additive): selects the session to compact explicitly.
+  Empty keeps the existing behavior (the session bound by the most recent prompt).
+  A fresh `Agent` that has never prompted previously had no way to compact a
+  pre-existing session -- `Compact` silently no-oped; harnesses that materialize a
+  fresh `Agent` per operation over a durable session store (resolute-harness-go's
+  manual `Compact` operation) need to name the session directly.
+
 ## [0.6.0] - 2026-07-01
 
 > **Live validation:** full agent tool loop confirmed against live `gemini-3.1-pro-preview`
