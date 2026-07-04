@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.3] - 2026-07-04
+
+### Added
+
+- **`ToolCallStartEvent.ThoughtSignature`** (additive): the agent-level tool-call event now
+  carries the provider's opaque thought signature (Gemini 3), copied from the underlying
+  `llm.ToolCallStartEvent`. Event consumers that persist tool calls outside the transcript —
+  resolute-harness-go authors durable `assistant_tool_call` records from this event — previously
+  had no way to capture the signature, so mid-turn crash recovery replayed signature-less tool
+  calls that Gemini 3 rejects with `400 INVALID_ARGUMENT` (HARNESS-11). Nil for providers
+  without signatures.
+
 ## [0.6.2] - 2026-07-04
 
 ### Fixed

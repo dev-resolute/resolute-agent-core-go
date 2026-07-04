@@ -488,7 +488,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 				Args:             e.Args,
 				ThoughtSignature: e.ThoughtSignature,
 			})
-			r.emit(ToolCallStartEvent{CallID: e.CallID, ToolName: e.ToolName, Args: e.Args})
+			r.emit(ToolCallStartEvent{CallID: e.CallID, ToolName: e.ToolName, Args: e.Args, ThoughtSignature: e.ThoughtSignature})
 		case llm.LLMErrorEvent:
 			if e.Transient {
 				r.emit(LLMErrorEvent{Error: e.Error, Transient: true})

@@ -205,3 +205,61 @@ func TestToolCallMessageWithoutSignatureYieldsNil(t *testing.T) {
 		t.Errorf("ToolCallThoughtSignature() on text = %q, want nil", got)
 	}
 }
+
+// The harness consumes agent events (not the transcript) to author durable
+// records, so the agent-level ToolCallStartEvent must carry the provider
+// thought signature too (HARNESS-11 contingency).
+func TestToolCallStartEventCarriesThoughtSignature(t *testing.T) {
+	t.Parallel()
+	sig := []byte("opaque-signature-bytes")
+
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			if call == 1 {
+				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping"), ThoughtSignature: sig}
+				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.MessageEndEvent{}
+				return
+			}
+			events <- llm.TextDeltaEvent{Delta: "done"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+	echo := NewTool(Tool[echoParams]{
+		Name:        "echo",
+		Description: "echo",
+		Execute: func(ctx context.Context, p echoParams) (ToolResult, error) {
+			return ToolResult{Content: "echoed:" + p.Value}, nil
+		},
+	})
+	a, err := NewAgent(AgentConfig{
+		Providers:    []llm.LLMProvider{provider},
+		DefaultModel: "test/model",
+		Tools:        []RegisteredTool{echo},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	events, result := drain(t, stream)
+	if result.Err != nil {
+		t.Fatalf("result.Err = %v, want nil", result.Err)
+	}
+
+	var seen bool
+	for _, ev := range events {
+		if tc, ok := ev.(ToolCallStartEvent); ok {
+			seen = true
+			if !bytes.Equal(tc.ThoughtSignature, sig) {
+				t.Errorf("ToolCallStartEvent.ThoughtSignature = %q, want %q", tc.ThoughtSignature, sig)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("no ToolCallStartEvent in agent event stream")
+	}
+}
