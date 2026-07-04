@@ -384,7 +384,8 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 		return "", err
 	}
 
-	var systemPrompt, userPrompt string
+	// The instruction prompts say "the messages above", so the transcript to
+	// summarize must precede the instruction (AGENT-17).
 	var prefixMsgs []Message
 
 	// Check if there is an existing summary to update.
@@ -396,23 +397,13 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 	if len(summaries) > 0 {
 		lastSummary := summaries[len(summaries)-1]
 		// TODO(v0.x): see ADR-0003 — system message can be folded into summary.
-		systemPrompt = SummarizationSystemPrompt
-		userPrompt = UpdateSummarizationPrompt
-		prefixMsgs = append([]Message{NewSystem(systemPrompt)}, NewText("user", userPrompt))
-		// Include the existing summary and the new prefix.
-		prefixMsgs = append(prefixMsgs, NewBranchSummaryMessage(lastSummary.Summary))
+		// Include the existing summary, the new prefix, then the instruction.
+		prefixMsgs = append([]Message{NewSystem(SummarizationSystemPrompt)}, NewBranchSummaryMessage(lastSummary.Summary))
 		prefixMsgs = append(prefixMsgs, prep.prefix...)
-	} else if len(prep.keptTail) > 0 && prep.cutIdx > 0 {
-		// Check if cut point falls mid-turn and we need split-turn summarization.
-		systemPrompt = SummarizationSystemPrompt
-		userPrompt = SummarizationPrompt
-		prefixMsgs = append([]Message{NewSystem(systemPrompt)}, NewText("user", userPrompt))
-		prefixMsgs = append(prefixMsgs, prep.prefix...)
+		prefixMsgs = append(prefixMsgs, NewText("user", UpdateSummarizationPrompt))
 	} else {
-		systemPrompt = SummarizationSystemPrompt
-		userPrompt = SummarizationPrompt
-		prefixMsgs = append([]Message{NewSystem(systemPrompt)}, NewText("user", userPrompt))
-		prefixMsgs = append(prefixMsgs, prep.prefix...)
+		prefixMsgs = append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
+		prefixMsgs = append(prefixMsgs, NewText("user", SummarizationPrompt))
 	}
 
 	// Detect mid-turn cut and use split-turn summarization if needed.
@@ -427,13 +418,14 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 // splitTurnSummarize runs two concurrent summarization calls when the cut point
 // falls mid-turn, concatenating the results.
 func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider, modelID string, prep *compactionPrep) (string, error) {
-	// History prefix summarization.
-	historyMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, NewText("user", SummarizationPrompt))
-	historyMsgs = append(historyMsgs, prep.prefix...)
+	// History prefix summarization. The instruction goes after the transcript
+	// — its wording references "the messages above" (AGENT-17).
+	historyMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
+	historyMsgs = append(historyMsgs, NewText("user", SummarizationPrompt))
 
 	// Turn prefix summarization.
-	turnMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, NewText("user", TurnPrefixSummarizationPrompt))
-	turnMsgs = append(turnMsgs, prep.prefix...)
+	turnMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
+	turnMsgs = append(turnMsgs, NewText("user", TurnPrefixSummarizationPrompt))
 
 	var historySummary, turnSummary string
 	var historyErr, turnErr error

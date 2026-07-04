@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.2] - 2026-07-04
+
+### Fixed
+
+- **Summarization instruction now follows the transcript it references (AGENT-17).** All three
+  summarization paths (first summary, update of an existing summary, split-turn history + turn
+  prefix) assembled the request as `[system, instruction, ...transcript]` while the instruction
+  wording says "the messages above" — real models saw an ordinary conversation as the last
+  message and continued it instead of emitting the structured checkpoint, silently losing facts
+  from the folded span. Requests are now `[system, ...transcript, instruction]`, matching the
+  upstream TS implementation the prompts were written for. Prompt-shape regression tests pin the
+  ordering per path.
+
 ## [0.6.1] - 2026-07-04
 
 ### Added
