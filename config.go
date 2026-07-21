@@ -37,6 +37,11 @@ type AgentConfig struct {
 	ThinkingBudgets  map[llm.ThinkingLevel]int
 	ReserveTokens    int
 	KeepRecentTokens int
+	// SummarizationRetry configures bounded retries with exponential backoff
+	// for the summarization calls made by Compact. The zero value disables
+	// retries, matching pre-0.7.0 behavior. Retry lifecycle is reported
+	// through Hooks.OnSummarizationRetry. Ported from upstream 0.81.1.
+	SummarizationRetry SummarizationRetryPolicy
 	// Transport is the preferred stream transport forwarded to every LLMRequest.
 	// Zero value behaves as TransportAuto.
 	Transport llm.TransportPreference

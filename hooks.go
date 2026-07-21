@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"time"
 
 	"github.com/dev-resolute/resolute-llm-go"
 )
@@ -17,6 +18,15 @@ type Hooks struct {
 	TransformContext      func(ctx context.Context, c TransformContextCtx) ([]Message, error)
 	BeforeProviderRequest func(ctx context.Context, c BeforeProviderRequestCtx) error
 	AfterProviderResponse func(ctx context.Context, c AfterProviderResponseCtx)
+
+	// OnSummarizationRetry is called at each retry-lifecycle point when a
+	// summarization call made by Compact fails transiently and
+	// AgentConfig.SummarizationRetry allows a retry. It is never called when
+	// the policy disables retries or the first call succeeds. It may be called
+	// concurrently: split-turn summarization runs two retried calls in
+	// parallel goroutines. It must not call back into the Agent. Nil is a
+	// no-op.
+	OnSummarizationRetry func(ctx context.Context, c SummarizationRetryCtx)
 
 	// ShouldStopAfterTurn is called at each turn boundary — after turn_end is
 	// emitted and tool results are flushed to the session, before the
@@ -142,4 +152,40 @@ type AfterTurnCtx struct {
 	Turn int
 	// HadToolCalls reports whether the LLM returned tool calls this turn.
 	HadToolCalls bool
+}
+
+// SummarizationRetryPhase identifies which point of the retry lifecycle an
+// OnSummarizationRetry call reports. Mirrors upstream 0.81.1's
+// summarization_retry_scheduled / _attempt_start / _finished events.
+type SummarizationRetryPhase int
+
+const (
+	_ SummarizationRetryPhase = iota // zero value is invalid
+	// SummarizationRetryScheduled fires before the backoff sleep of each retry.
+	SummarizationRetryScheduled
+	// SummarizationRetryAttemptStart fires after the backoff sleep, immediately
+	// before the retried call starts.
+	SummarizationRetryAttemptStart
+	// SummarizationRetryFinished fires once when the retry loop ends, whether
+	// it succeeded, exhausted its budget, or was aborted during backoff.
+	SummarizationRetryFinished
+)
+
+// SummarizationRetryCtx describes one retry-lifecycle point of a failed
+// summarization call (Compact's first summary, summary update, or split-turn
+// pair).
+type SummarizationRetryCtx struct {
+	Phase SummarizationRetryPhase
+	// Attempt is the 1-indexed retry attempt this point belongs to.
+	Attempt int
+	// MaxAttempts is the configured MaxRetries. Set on Scheduled.
+	MaxAttempts int
+	// Delay is the backoff about to be slept. Set on Scheduled.
+	Delay time.Duration
+	// Success reports the loop outcome. Set on Finished.
+	Success bool
+	// Err is the error that triggered this retry on Scheduled, and the final
+	// error on an unsuccessful Finished. Nil on AttemptStart and on a
+	// successful Finished.
+	Err error
 }
