@@ -454,8 +454,64 @@ func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider
 	return historySummary + "\n" + turnSummary, nil
 }
 
-// summarizeWithLLM calls the provider to produce a summary from the given messages.
+// summarizeWithLLM calls the provider to produce a summary from the given
+// messages, retrying transient failures per AgentConfig.SummarizationRetry
+// (upstream 0.81.1 parity). Retry lifecycle is reported through the
+// OnSummarizationRetry hook; the hook never fires when the policy disables
+// retries or the first call succeeds.
 func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, error) {
+	policy := a.config.SummarizationRetry.normalized()
+
+	summary, err := a.summarizeOnce(ctx, provider, modelID, msgs)
+	if err == nil || policy.MaxRetries == 0 || !isTransientSummarizationError(err) {
+		return summary, err
+	}
+
+	for attempt := 1; ; attempt++ {
+		delay := policy.backoff(attempt)
+		a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
+			Phase:       SummarizationRetryScheduled,
+			Attempt:     attempt,
+			MaxAttempts: policy.MaxRetries,
+			Delay:       delay,
+			Err:         err,
+		})
+		if sleepErr := sleepCtx(ctx, delay); sleepErr != nil {
+			a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
+				Phase:   SummarizationRetryFinished,
+				Attempt: attempt,
+				Err:     err,
+			})
+			return "", fmt.Errorf("summarization retry wait: %w", sleepErr)
+		}
+		a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
+			Phase:   SummarizationRetryAttemptStart,
+			Attempt: attempt,
+		})
+
+		summary, err = a.summarizeOnce(ctx, provider, modelID, msgs)
+		if err == nil {
+			a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
+				Phase:   SummarizationRetryFinished,
+				Attempt: attempt,
+				Success: true,
+			})
+			return summary, nil
+		}
+		if attempt >= policy.MaxRetries || !isTransientSummarizationError(err) {
+			a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
+				Phase:   SummarizationRetryFinished,
+				Attempt: attempt,
+				Err:     err,
+			})
+			return "", err
+		}
+	}
+}
+
+// summarizeOnce performs a single summarization call and collects the streamed
+// text. Callers wanting retry behavior should call summarizeWithLLM.
+func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, error) {
 	llmMsgs := DefaultConvertToLLM(msgs)
 	req := llm.LLMRequest{
 		Model:    modelID,
@@ -474,4 +530,11 @@ func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, 
 		return "", result.Err
 	}
 	return strings.TrimSpace(summary.String()), nil
+}
+
+// notifySummarizationRetry fires the OnSummarizationRetry hook if configured.
+func (a *Agent) notifySummarizationRetry(ctx context.Context, c SummarizationRetryCtx) {
+	if a.hooks.OnSummarizationRetry != nil {
+		a.hooks.OnSummarizationRetry(ctx, c)
+	}
 }
