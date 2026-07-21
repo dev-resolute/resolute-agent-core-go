@@ -33,3 +33,12 @@ Ship **A′** — port Pi's compaction shape exactly, day 1. Inherit all four ga
 - **No `ContextWindow` field on `AgentConfig` in v0.** Adding it without auto-trigger would be cargo-cult; adding it later is non-breaking.
 - **Users with long conversations have two levers**: manual `Compact()` or `TransformContext` for custom pruning. Both are sufficient for the v0 use cases we've validated.
 - **Auto-trigger arrives in v0.x** as `AgentConfig.AutoCompact bool` once we have data on the manual-call pattern.
+
+## Addendum (2026-07-21)
+
+Beyond the four gaps above: upstream 0.81.1 (pi#6901) made compaction and
+branch summarization resilient to transient provider failures under the
+configured retry policy, with retry lifecycle events. Ported in v0.7.0 as
+`AgentConfig.SummarizationRetry` + `Hooks.OnSummarizationRetry` (hook instead
+of events, per the ADR-0007 precedent — Compact has no EventStream). The four
+gaps above are otherwise unchanged.

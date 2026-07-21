@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0] - 2026-07-21
+
+### Added
+
+- **Resilient summarization (port of upstream 0.81.1, pi#6901).** Compact's
+  summarization calls (first summary, summary update, and the split-turn pair)
+  now retry transient provider failures per the new
+  `AgentConfig.SummarizationRetry` policy — bounded attempts with exponential
+  backoff (`BaseDelay * 2^(attempt-1)`, capped at `MaxDelay`). Fatal provider
+  errors (`llm.ErrProviderFatal`), context overflow (`llm.ErrContextOverflow`),
+  and caller cancellation fail fast without retries. The zero policy disables
+  retries, matching pre-0.7.0 behavior. Retry lifecycle is reported through
+  the new `Hooks.OnSummarizationRetry` hook (scheduled / attempt-start /
+  finished phases) — the Go-shaped equivalent of upstream's
+  `summarization_retry_*` events; Compact has no EventStream, so a hook is the
+  delivery path (ADR-0007 precedent). The hook may fire concurrently from the
+  split-turn path's two goroutines.
+
 ## [0.6.3] - 2026-07-04
 
 ### Added
