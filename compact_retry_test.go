@@ -285,3 +285,46 @@ func TestCompactSummarizationRetryAbortDuringBackoff(t *testing.T) {
 		t.Errorf("abort during backoff took %v, want prompt return", elapsed)
 	}
 }
+
+// TestSplitTurnSummarizeRetriesBothCalls drives the split-turn path directly:
+// both concurrent summarization calls fail once, then succeed.
+func TestSplitTurnSummarizeRetriesBothCalls(t *testing.T) {
+	provider := &flakySummarizingProvider{failures: 2, failErr: errors.New("429 too many requests")}
+	rec := &retryHookRecorder{}
+	agent, err := NewAgent(AgentConfig{
+		Providers:          []llm.LLMProvider{provider},
+		DefaultModel:       "test/model",
+		Session:            newInternalMemorySession(),
+		SummarizationRetry: SummarizationRetryPolicy{MaxRetries: 2, BaseDelay: time.Millisecond},
+		Hooks:              Hooks{OnSummarizationRetry: rec.record},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	prep := &compactionPrep{
+		cutIdx:   2,
+		prefix:   []Message{NewText("user", "do the thing"), NewText("assistant", "working on it")},
+		keptTail: []Message{NewText("user", "recent work kept verbatim")},
+	}
+	got, err := agent.splitTurnSummarize(context.Background(), provider, "model", prep)
+	if err != nil {
+		t.Fatalf("splitTurnSummarize: %v", err)
+	}
+	if !strings.Contains(got, "summarized") {
+		t.Errorf("summary = %q, want it to contain the provider's summary text", got)
+	}
+	if calls := provider.callCount(); calls != 4 {
+		t.Errorf("provider calls = %d, want 4 (2 concurrent calls, 1 retry each)", calls)
+	}
+
+	// Each side fires Scheduled, AttemptStart, Finished — order between the two
+	// concurrent sides is interleaved, so count phases instead of comparing sequences.
+	counts := map[SummarizationRetryPhase]int{}
+	for _, p := range rec.phases() {
+		counts[p]++
+	}
+	if counts[SummarizationRetryScheduled] != 2 || counts[SummarizationRetryAttemptStart] != 2 || counts[SummarizationRetryFinished] != 2 {
+		t.Errorf("phase counts = %v, want 2 of each", counts)
+	}
+}
