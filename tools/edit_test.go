@@ -71,14 +71,12 @@ func TestEditToolSchema(t *testing.T) {
 	if !ok {
 		t.Fatal(`schema properties missing "edits"`)
 	}
-	// The brief's editParams.Edits jsonschema tag (ported verbatim) contains
-	// unescaped commas in its description text. invopop/jsonschema's tag
-	// parser (splitOnUnescapedCommas, reflect.go) treats an unescaped comma
-	// as a tag-option separator, so the description the model actually sees
-	// is truncated at the first comma - this pins that real, observable
-	// schema output rather than the full prose, since the struct tag itself
-	// is normative per the task-11 brief and is not this task's to change.
-	if want := "One or more targeted replacements. Each edit is matched against the original file"; editsProp.Description != want {
+	// Full description, byte-identical to upstream editSchema's edits field -
+	// editParams.Edits' jsonschema tag escapes its internal commas (`\,`) so
+	// invopop/jsonschema's tag parser (which otherwise treats an unescaped
+	// comma as a tag-option separator, truncating the description at the
+	// first one) emits the complete text into the generated schema.
+	if want := "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."; editsProp.Description != want {
 		t.Errorf(`schema "edits" description = %q, want %q`, editsProp.Description, want)
 	}
 	if editsProp.Items == nil {

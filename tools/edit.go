@@ -41,18 +41,22 @@ type editEntry struct {
 // editParams are the model-supplied arguments to the "edit" tool. Ported
 // from upstream's editSchema.
 //
-// NOTE on Edits' jsonschema tag: its description contains unescaped commas.
-// invopop/jsonschema's struct-tag parser (splitOnUnescapedCommas, reflect.go)
-// treats an unescaped comma as a tag-option separator, not description text,
-// so the schema actually exposed to the model truncates this description at
-// its first comma ("...matched against the original file" - see
-// TestEditToolSchema, which pins the real, truncated output). The tag text
-// itself is the task-11 brief's exact, prescribed interface and is left
-// unescaped here to match it verbatim; escaping the commas (`\,`) would fix
-// the truncation but was not part of the specified interface.
+// NOTE on Edits' jsonschema tag: its description contains commas, escaped
+// here in source as `\\,` (a Go string escape for a literal backslash,
+// followed by a literal comma) so that reflect.StructTag.Get - which runs
+// the tag's quoted value through strconv.Unquote before invopop ever sees
+// it - hands invopop the two literal characters `\,`. invopop/jsonschema's
+// own tag parser (splitOnUnescapedCommas, reflect.go) treats an UNescaped
+// comma as a tag-option separator, not description text, which would
+// otherwise truncate the schema actually exposed to the model at the first
+// comma (see TestEditToolSchema, which pins the FULL, untruncated
+// description this escaping produces) - full model-facing description
+// parity with upstream's editSchema wins over literal, unescaped brief tag
+// text. (A single unescaped `\,` is not a valid Go string escape at all -
+// go vet's structtag check rejects it outright.)
 type editParams struct {
 	Path  string      `json:"path" jsonschema:"description=Path to the file to edit (relative or absolute)"`
-	Edits []editEntry `json:"edits" jsonschema:"description=One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."`
+	Edits []editEntry `json:"edits" jsonschema:"description=One or more targeted replacements. Each edit is matched against the original file\\, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines\\, merge them into one edit instead."`
 }
 
 // editToolDescription is the "edit" tool's model-facing description, ported
