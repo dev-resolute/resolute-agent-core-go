@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -16,24 +17,18 @@ import (
 // @0.82.0: the "bash" model-facing tool - run a shell command through
 // ExecuteShellWithCapture (shell_output.go, Task 8), streaming throttled
 // partial output through the root package's ExecuteStream seam (tool.go,
-// Task 4), and assembling the same truncation notices and exit/timeout/
-// abort status text upstream does, byte-for-byte.
+// Task 4), and assembling the same truncation notices, exit/timeout/abort
+// status text, and Data payload upstream does, byte-for-byte.
 //
 // Deviations from upstream:
-//   - bashParams.Timeout is a plain float64 (per this task's interface),
-//     not an optional/nullable number: the JSON zero value can't be told
-//     apart from an omitted field, so - exactly like truncate.go's
-//     TruncationOptions treats a zero MaxLines/MaxBytes as "use the
-//     default" rather than "literally zero" - a Timeout of 0 here is
-//     treated as "no timeout requested", not validated as an error. Any
-//     other non-positive or non-finite value is still rejected exactly as
-//     upstream's validateTimeout rejects it.
-//   - Upstream's onUpdate carries a `details` object alongside the partial
-//     text (truncation + fullOutputPath). This task's interface list has no
-//     BashToolDetails type, and no test in the brief inspects
-//     ToolResult.Data, so partial/final results here carry Content only -
-//     the truncation notice text itself (in the final result) already
-//     conveys the same information a model needs.
+//   - bashParams.Timeout is *float64, not a plain float64: mirroring
+//     read.go's readParams.Limit (Task 10), a pointer is required to tell
+//     an explicit `timeout: 0` apart from an omitted field - both collapse
+//     to the same JSON zero value on a plain float64, but upstream rejects
+//     an explicit 0 (`timeout <= 0`) while treating an omitted timeout as
+//     "no timeout enforced". nil means omitted; a non-nil pointer -
+//     including one pointing at 0 - means the model supplied a timeout,
+//     validated exactly as upstream's validateTimeout validates it.
 //   - Upstream emits one extra `onUpdate({ content: [], details: undefined
 //     })` immediately before starting the command, to clear any
 //     previously-displayed state in a long-lived UI. That has no
@@ -44,7 +39,10 @@ import (
 //     pi.ToolResult{IsError: true, Content: <message>} rather than a
 //     bubbled Go error, matching read.go/write.go's established convention:
 //     upstream's harness uniformly converts any thrown error into an error
-//     tool result regardless of origin.
+//     tool result regardless of origin. Upstream's thrown errors (cancelled/
+//     timed-out/non-zero-exit) never carry `details` either - only the
+//     successful, non-error return (bash.ts:155) does - so this port's
+//     error-path ToolResults never set Data, matching that exactly.
 
 // maxTimeoutSeconds mirrors upstream's MAX_TIMEOUT_SECONDS = 2_147_483_647 / 1000
 // (bash.ts:8) - the largest value setTimeout can honor in milliseconds,
@@ -100,10 +98,21 @@ type BashToolOptions struct {
 	Prepare func(ctx context.Context, exec *BashExecution) error
 }
 
-// bashParams are the model-supplied arguments to the "bash" tool.
+// bashParams are the model-supplied arguments to the "bash" tool. Timeout is
+// *float64, not a plain float64: see this file's package comment for why a
+// pointer is needed to distinguish an omitted timeout from an explicit 0.
+//
+// NOTE on Timeout's jsonschema tag: its description contains a comma,
+// escaped here as `\\,` - the same fix edit.go's editParams.Edits tag
+// applies and documents in full. Unescaped, invopop/jsonschema's tag
+// parser (splitOnUnescapedCommas, reflect.go) treats the comma as a
+// tag-option separator rather than description text, silently truncating
+// the schema exposed to the model at "Timeout in seconds (optional" (see
+// TestNewBashToolSchema, which pins the full, untruncated description this
+// escaping produces).
 type bashParams struct {
-	Command string  `json:"command" jsonschema:"description=Bash command to execute"`
-	Timeout float64 `json:"timeout,omitempty" jsonschema:"description=Timeout in seconds (optional, no default timeout)"`
+	Command string   `json:"command" jsonschema:"description=Bash command to execute"`
+	Timeout *float64 `json:"timeout,omitempty" jsonschema:"description=Timeout in seconds (optional\\, no default timeout)"`
 }
 
 // NewBashTool creates the "bash" tool: run a shell command, streaming
@@ -143,8 +152,8 @@ func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 			defer throttle.stop()
 
 			var timeout time.Duration
-			if p.Timeout > 0 {
-				timeout = time.Duration(p.Timeout * float64(time.Second))
+			if p.Timeout != nil {
+				timeout = time.Duration(*p.Timeout * float64(time.Second))
 			}
 
 			capture, err := ExecuteShellWithCapture(ctx, env, exec.Command, ShellCaptureOptions{
@@ -160,15 +169,17 @@ func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 			throttle.finalFlush(capture)
 
 			outputText := capture.Output
+			var data json.RawMessage
 			if capture.Truncation.Truncated {
 				outputText += bashTruncationNotice(capture)
+				data = marshalBashDetails(capture.Truncation, true, capture.FullOutputPath)
 			}
 
 			switch {
 			case capture.Cancelled:
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, "Command aborted")}, nil
 			case capture.TimedOut:
-				status := fmt.Sprintf("Command timed out after %s seconds", formatJSNumber(p.Timeout))
+				status := fmt.Sprintf("Command timed out after %s seconds", formatJSNumber(*p.Timeout))
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, status)}, nil
 			case capture.ExitCode != 0:
 				status := fmt.Sprintf("Command exited with code %d", capture.ExitCode)
@@ -178,22 +189,24 @@ func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 			if outputText == "" {
 				outputText = "(no output)"
 			}
-			return pi.ToolResult{Content: outputText}, nil
+			return pi.ToolResult{Content: outputText, Data: data}, nil
 		},
 	})
 }
 
-// validateBashTimeout mirrors bash.ts's validateTimeout. See this file's
-// package comment for why a zero Timeout is treated as "not provided"
-// rather than rejected.
-func validateBashTimeout(timeout float64) error {
-	if timeout == 0 {
+// validateBashTimeout mirrors bash.ts's validateTimeout: nil (omitted) is
+// always valid (no timeout enforced); otherwise the pointed-to value must
+// be finite and positive - explicit 0 included - and no larger than
+// maxTimeoutSeconds.
+func validateBashTimeout(timeout *float64) error {
+	if timeout == nil {
 		return nil
 	}
-	if math.IsNaN(timeout) || math.IsInf(timeout, 0) || timeout < 0 {
+	v := *timeout
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 		return errors.New("Invalid timeout: must be a finite number of seconds")
 	}
-	if timeout > maxTimeoutSeconds {
+	if v > maxTimeoutSeconds {
 		return fmt.Errorf("Invalid timeout: maximum is %s seconds", formatJSNumber(maxTimeoutSeconds))
 	}
 	return nil
@@ -221,6 +234,50 @@ func appendBashStatus(outputText, status string) string {
 		return status
 	}
 	return outputText + "\n\n" + status
+}
+
+// bashToolDetails is the JSON shape written to ToolResult.Data, mirroring
+// upstream's BashToolDetails interface field-for-field with its camelCase
+// JSON keys (`{ truncation?: TruncationResult; fullOutputPath?: string }`,
+// bash.ts:18-21).
+type bashToolDetails struct {
+	Truncation     *truncationDetail `json:"truncation,omitempty"`
+	FullOutputPath string            `json:"fullOutputPath,omitempty"`
+}
+
+// marshalBashDetails builds the {"truncation": ..., "fullOutputPath": ...}
+// JSON payload for ToolResult.Data. includeTruncation mirrors upstream's
+// `progress.truncation.truncated ? progress.truncation : undefined`
+// (bash.ts:82) for partial emits - Truncation is omitted from the payload
+// until truncation has actually kicked in, even though a truncation result
+// (with Truncated: false) always exists. fullOutputPath is upstream's
+// `progress.fullOutputPath`, which stays "" (upstream: undefined) until the
+// stream first overflows and a spill file is created - an empty string
+// here is dropped by the `omitempty` tag exactly as an undefined property
+// is dropped by JSON.stringify. The error from json.Marshal is ignored:
+// bashToolDetails is a plain struct of strings/bools/ints (truncationDetail,
+// read.go) plus a string, which json.Marshal cannot fail on - matching
+// read.go's marshalTruncationDetails established convention for the same
+// reason.
+func marshalBashDetails(t TruncationResult, includeTruncation bool, fullOutputPath string) json.RawMessage {
+	details := bashToolDetails{FullOutputPath: fullOutputPath}
+	if includeTruncation {
+		details.Truncation = &truncationDetail{
+			Content:               t.Content,
+			Truncated:             t.Truncated,
+			TruncatedBy:           t.TruncatedBy,
+			TotalLines:            t.TotalLines,
+			TotalBytes:            t.TotalBytes,
+			OutputLines:           t.OutputLines,
+			OutputBytes:           t.OutputBytes,
+			LastLinePartial:       t.LastLinePartial,
+			FirstLineExceedsLimit: t.FirstLineExceedsLimit,
+			MaxLines:              t.MaxLines,
+			MaxBytes:              t.MaxBytes,
+		}
+	}
+	raw, _ := json.Marshal(details)
+	return raw
 }
 
 // bashTruncationNotice builds the "[Showing ...]" suffix appended to
@@ -318,7 +375,11 @@ func (t *bashThrottle) clearTimerLocked() {
 
 // emitLocked mirrors emitOutputUpdate: a no-op unless the state is dirty
 // (a chunk has arrived since the last emit), so a timer that fires after
-// finalFlush already emitted the same progress does nothing.
+// finalFlush already emitted the same progress does nothing. Every emit -
+// including before truncation ever kicks in - carries a Data payload,
+// mirroring upstream's onUpdate always attaching a details object
+// (bash.ts:79-85), even one whose truncation/fullOutputPath fields are
+// both still omitted.
 func (t *bashThrottle) emitLocked() {
 	if !t.dirty || t.getProgress == nil {
 		return
@@ -326,7 +387,8 @@ func (t *bashThrottle) emitLocked() {
 	t.dirty = false
 	t.lastEmit = time.Now()
 	progress := t.getProgress()
-	t.emit(pi.ToolResult{Content: progress.Output})
+	data := marshalBashDetails(progress.Truncation, progress.Truncation.Truncated, progress.FullOutputPath)
+	t.emit(pi.ToolResult{Content: progress.Output, Data: data})
 }
 
 // finalFlush forces exactly one last emit of capture's final state,

@@ -39,6 +39,35 @@ func mustMarshalBashParams(t *testing.T, p bashParams) json.RawMessage {
 	return raw
 }
 
+// float64Ptr is a small test-local convenience for constructing
+// bashParams.Timeout literals: bashParams.Timeout is *float64 (not a plain
+// float64) specifically so an explicit 0 can be told apart from an omitted
+// field - see bash.go's package comment.
+func float64Ptr(v float64) *float64 { return &v }
+
+// bashDetailsForTest mirrors the subset of bash.go's bashToolDetails JSON
+// shape these tests need to assert on (ToolResult.Data's wire format).
+type bashDetailsForTest struct {
+	Truncation *struct {
+		Truncated   bool   `json:"truncated"`
+		TruncatedBy string `json:"truncatedBy"`
+		TotalLines  int    `json:"totalLines"`
+	} `json:"truncation"`
+	FullOutputPath string `json:"fullOutputPath"`
+}
+
+// mustUnmarshalBashDetails decodes result.Data as bashDetailsForTest,
+// failing the test on any decode error - result.Data is expected to always
+// be valid JSON produced by bash.go's own marshalBashDetails.
+func mustUnmarshalBashDetails(t *testing.T, data json.RawMessage) bashDetailsForTest {
+	t.Helper()
+	var got bashDetailsForTest
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal(Data) error: %v, Data = %s", err, data)
+	}
+	return got
+}
+
 func TestNewBashToolNameAndDescription(t *testing.T) {
 	env, _ := newTestOSEnv(t)
 	tool := NewBashTool(BashToolOptions{Env: env})
@@ -52,6 +81,42 @@ func TestNewBashToolNameAndDescription(t *testing.T) {
 	want := "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds."
 	if got := tool.Description(); got != want {
 		t.Errorf("Description() = %q, want %q", got, want)
+	}
+}
+
+// TestNewBashToolSchema verifies bashParams.Timeout's jsonschema
+// description survives the float64 -> *float64 change (a pointer field),
+// mirroring TestReadToolSchema's verification of the same
+// invopop/jsonschema behavior for readParams.Limit (Task 10).
+func TestNewBashToolSchema(t *testing.T) {
+	env, _ := newTestOSEnv(t)
+	tool := NewBashTool(BashToolOptions{Env: env})
+
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(tool.Schema(), &schema); err != nil {
+		t.Fatalf("json.Unmarshal(schema) error: %v", err)
+	}
+
+	tests := []struct {
+		prop string
+		want string
+	}{
+		{"command", "Bash command to execute"},
+		{"timeout", "Timeout in seconds (optional, no default timeout)"},
+	}
+	for _, tc := range tests {
+		got, ok := schema.Properties[tc.prop]
+		if !ok {
+			t.Errorf("schema properties missing %q", tc.prop)
+			continue
+		}
+		if got.Description != tc.want {
+			t.Errorf("schema properties[%q].description = %q, want %q", tc.prop, got.Description, tc.want)
+		}
 	}
 }
 
@@ -85,24 +150,56 @@ func TestBashToolEchoHi(t *testing.T) {
 	if result.Content != "hi\n" {
 		t.Errorf("Content = %q, want %q", result.Content, "hi\n")
 	}
+	if result.Data != nil {
+		t.Errorf("Data = %s, want nil (no truncation occurred)", result.Data)
+	}
 }
 
-// TestBashToolZeroTimeoutMeansOmitted pins the zero-value tradeoff
-// documented in bash.go: bashParams.Timeout is a plain float64, so an
-// explicit 0 is indistinguishable from an omitted field at the JSON layer.
-// This port treats both as "no timeout requested" rather than rejecting
-// the explicit-0 case the way upstream's validateTimeout would - the same
-// zero-means-default tradeoff truncate.go's TruncationOptions already
-// makes for MaxLines/MaxBytes.
-func TestBashToolZeroTimeoutMeansOmitted(t *testing.T) {
+// TestBashToolOmittedTimeoutRunsWithNoTimeout pins the nil (omitted) half
+// of the pointer-based fix documented in bash.go: bashParams{} with no
+// Timeout set marshals to JSON with the "timeout" key entirely absent
+// (omitempty on a nil pointer), unmarshals back to a nil pointer, and
+// validateBashTimeout treats nil as "no timeout enforced" - matching
+// upstream's `timeout === undefined` early return. See
+// TestBashToolExplicitZeroTimeoutIsRejected for the other half: an
+// explicit 0, now correctly rejected instead of collapsing to this case.
+func TestBashToolOmittedTimeoutRunsWithNoTimeout(t *testing.T) {
 	env, _ := newTestOSEnv(t)
-	result := runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{Command: "echo hi", Timeout: 0})
+	result := runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{Command: "echo hi"})
 
 	if result.IsError {
-		t.Fatalf("IsError = true, Content = %q, want a successful run (Timeout: 0 means \"not provided\")", result.Content)
+		t.Fatalf("IsError = true, Content = %q, want a successful run (omitted Timeout means no timeout enforced)", result.Content)
 	}
 	if result.Content != "hi\n" {
 		t.Errorf("Content = %q, want %q", result.Content, "hi\n")
+	}
+}
+
+// TestBashToolExplicitZeroTimeoutIsRejected pins the fix for the parity gap
+// flagged in code review: bashParams.Timeout is now *float64 (mirroring
+// read.go's readParams.Limit, Task 10) specifically so an explicit
+// `timeout: 0` - which upstream rejects via `timeout <= 0` - can be told
+// apart from an omitted field and validated the same way upstream does,
+// instead of silently collapsing to "no timeout" like the prior plain-
+// float64 field did.
+func TestBashToolExplicitZeroTimeoutIsRejected(t *testing.T) {
+	env, dir := newTestOSEnv(t)
+	marker := filepath.Join(dir, "marker.txt")
+
+	result := runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{
+		Command: "touch " + marker,
+		Timeout: float64Ptr(0),
+	})
+
+	if !result.IsError {
+		t.Fatalf("IsError = false, want true (explicit timeout: 0 is invalid), Content = %q", result.Content)
+	}
+	want := "Invalid timeout: must be a finite number of seconds"
+	if result.Content != want {
+		t.Errorf("Content = %q, want %q", result.Content, want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("marker file exists, want the command to never have executed")
 	}
 }
 
@@ -138,7 +235,7 @@ func TestBashToolTimeout(t *testing.T) {
 	go func() {
 		resultCh <- runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{
 			Command: "echo partial; sleep 5",
-			Timeout: 0.1,
+			Timeout: float64Ptr(0.1),
 		})
 	}()
 
@@ -190,7 +287,7 @@ func TestBashToolInvalidTimeoutTooSmallDoesNotExecute(t *testing.T) {
 
 	result := runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{
 		Command: "touch " + marker,
-		Timeout: -1,
+		Timeout: float64Ptr(-1),
 	})
 
 	if !result.IsError {
@@ -211,7 +308,7 @@ func TestBashToolInvalidTimeoutTooLargeDoesNotExecute(t *testing.T) {
 
 	result := runBash(context.Background(), t, BashToolOptions{Env: env}, bashParams{
 		Command: "touch " + marker,
-		Timeout: 2147483647.0/1000.0 + 1,
+		Timeout: float64Ptr(2147483647.0/1000.0 + 1),
 	})
 
 	if !result.IsError {
@@ -314,6 +411,24 @@ func TestBashToolTruncationByLines(t *testing.T) {
 	if string(spilled) != wantFull {
 		t.Errorf("spill file does not contain all 5000 lines: got %d bytes, want %d bytes", len(spilled), len(wantFull))
 	}
+
+	if result.Data == nil {
+		t.Fatal("Data = nil, want a truncation+fullOutputPath payload (truncation occurred)")
+	}
+	details := mustUnmarshalBashDetails(t, result.Data)
+	if details.Truncation == nil || !details.Truncation.Truncated {
+		t.Errorf("Data.truncation = %+v, want truncated=true", details.Truncation)
+	} else {
+		if details.Truncation.TruncatedBy != "lines" {
+			t.Errorf("Data.truncation.truncatedBy = %q, want %q", details.Truncation.TruncatedBy, "lines")
+		}
+		if details.Truncation.TotalLines != 5000 {
+			t.Errorf("Data.truncation.totalLines = %d, want 5000", details.Truncation.TotalLines)
+		}
+	}
+	if details.FullOutputPath != path {
+		t.Errorf("Data.fullOutputPath = %q, want %q (matching the Content notice)", details.FullOutputPath, path)
+	}
 }
 
 func TestBashToolTruncationByBytes(t *testing.T) {
@@ -336,6 +451,19 @@ func TestBashToolTruncationByBytes(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "[Showing lines ") {
 		t.Errorf("Content = %q, want it to contain a \"[Showing lines ...\" notice", lastN(result.Content, 200))
+	}
+
+	if result.Data == nil {
+		t.Fatal("Data = nil, want a truncation+fullOutputPath payload (truncation occurred)")
+	}
+	details := mustUnmarshalBashDetails(t, result.Data)
+	if details.Truncation == nil || !details.Truncation.Truncated {
+		t.Errorf("Data.truncation = %+v, want truncated=true", details.Truncation)
+	} else if details.Truncation.TruncatedBy != "bytes" {
+		t.Errorf("Data.truncation.truncatedBy = %q, want %q", details.Truncation.TruncatedBy, "bytes")
+	}
+	if details.FullOutputPath == "" {
+		t.Error("Data.fullOutputPath = \"\", want non-empty (output overflowed, so it must have been spilled)")
 	}
 }
 
@@ -369,16 +497,34 @@ func TestBashToolHugeSingleLineTruncation(t *testing.T) {
 	if len(spilled) != 60000 {
 		t.Errorf("spill file length = %d, want 60000 (the full untruncated line)", len(spilled))
 	}
+
+	if result.Data == nil {
+		t.Fatal("Data = nil, want a truncation+fullOutputPath payload (truncation occurred)")
+	}
+	details := mustUnmarshalBashDetails(t, result.Data)
+	if details.Truncation == nil || !details.Truncation.Truncated {
+		t.Errorf("Data.truncation = %+v, want truncated=true", details.Truncation)
+	}
+	if details.FullOutputPath != path {
+		t.Errorf("Data.fullOutputPath = %q, want %q (matching the Content notice)", details.FullOutputPath, path)
+	}
 }
 
 // TestBashToolStreamingThrottledEmits drives ExecuteStream directly (via
-// the streamingTool capability) with a command that emits one line every
-// ~50ms for ~500ms, asserting: at least 2 partial emits land (proving
-// throttled streaming actually happens, not just a single final emit), and
-// that successive emits' Content only grows (proving each snapshot is
-// cumulative, not a per-chunk delta). Deliberately timing-tolerant: no
-// exact emit count is asserted, since the real 100ms throttle window means
-// the exact number of emits depends on scheduling jitter.
+// the streamingTool capability) with a command that bursts 250 lines then
+// sleeps ~50ms, ten times over (2500 lines total, comfortably over
+// DefaultMaxLines=2000, spread across ~500ms), asserting: at least 2
+// partial emits land (proving throttled streaming actually happens, not
+// just a single final emit); that successive emits' Content only grows
+// (proving each snapshot is cumulative, not a per-chunk delta); and that
+// the LAST snapshot - the throttle's finalFlush, deterministically the
+// tail of the slice regardless of scheduling jitter (bash.go's
+// bashThrottle.finalFlush always runs exactly once, strictly after every
+// onChunk-driven emit) - carries a Data payload whose truncation/
+// fullOutputPath reflect the overflow. Deliberately timing-tolerant
+// otherwise: no exact emit count, and no assertion pinning which
+// *particular* earlier snapshot first saw truncation, since the exact
+// number and timing of emits depends on scheduling jitter.
 func TestBashToolStreamingThrottledEmits(t *testing.T) {
 	env, _ := newTestOSEnv(t)
 	tool := NewBashTool(BashToolOptions{Env: env})
@@ -388,21 +534,21 @@ func TestBashToolStreamingThrottledEmits(t *testing.T) {
 	}
 
 	args := mustMarshalBashParams(t, bashParams{
-		Command: `for i in $(seq 1 10); do echo "line $i"; sleep 0.05; done`,
+		Command: `for i in $(seq 1 10); do for j in $(seq 1 250); do echo "line $i-$j"; done; sleep 0.05; done`,
 	})
 
 	type outcome struct {
 		result    pi.ToolResult
 		err       error
-		snapshots []string
+		snapshots []pi.ToolResult
 	}
 	outcomeCh := make(chan outcome, 1)
 	go func() {
 		var mu sync.Mutex
-		var snapshots []string
+		var snapshots []pi.ToolResult
 		result, err := st.ExecuteStream(context.Background(), "c1", args, func(r pi.ToolResult) {
 			mu.Lock()
-			snapshots = append(snapshots, r.Content)
+			snapshots = append(snapshots, r)
 			mu.Unlock()
 		})
 		outcomeCh <- outcome{result: result, err: err, snapshots: snapshots}
@@ -417,16 +563,54 @@ func TestBashToolStreamingThrottledEmits(t *testing.T) {
 			t.Fatalf("result.IsError = true, Content = %q", out.result.Content)
 		}
 		if len(out.snapshots) < 2 {
-			t.Fatalf("got %d streaming emits, want >= 2 (Content snapshots: %v)", len(out.snapshots), out.snapshots)
+			t.Fatalf("got %d streaming emits, want >= 2", len(out.snapshots))
 		}
-		for i := 1; i < len(out.snapshots); i++ {
-			if len(out.snapshots[i]) < len(out.snapshots[i-1]) {
-				t.Errorf("snapshot %d shrank (%d bytes -> %d bytes): %q -> %q, want cumulative (non-decreasing) output",
-					i, len(out.snapshots[i-1]), len(out.snapshots[i]), out.snapshots[i-1], out.snapshots[i])
+		for i, snap := range out.snapshots {
+			if snap.Data == nil {
+				t.Errorf("snapshot %d Data = nil, want every partial emit to carry a Data payload (bash.ts:79-85 attaches details to every onUpdate)", i)
+				continue
+			}
+			if i == 0 {
+				continue
+			}
+			prev := out.snapshots[i-1]
+			if prev.Data == nil {
+				continue // already reported above
+			}
+			currDetails := mustUnmarshalBashDetails(t, snap.Data)
+			prevDetails := mustUnmarshalBashDetails(t, prev.Data)
+			currTruncated := currDetails.Truncation != nil && currDetails.Truncation.Truncated
+			prevTruncated := prevDetails.Truncation != nil && prevDetails.Truncation.Truncated
+			if currTruncated || prevTruncated {
+				// Once truncation kicks in - including the very transition
+				// step itself, where Output switches from the raw,
+				// ever-growing tail to TruncateTail's capped "last N
+				// lines/bytes" window (shell_output.go's snapshotLocked) -
+				// its length can shrink or otherwise fluctuate as the
+				// window slides forward. That's correct upstream-mirroring
+				// behavior (confirmed by direct inspection: the shrink
+				// lands exactly on the chunk where Truncation.Truncated
+				// first flips true), not a bug, so the monotonic-growth
+				// assertion only applies to the still-growing prefix before
+				// truncation starts.
+				continue
+			}
+			if len(snap.Content) < len(prev.Content) {
+				t.Errorf("snapshot %d shrank (%d bytes -> %d bytes) before truncation kicked in: %q -> %q, want cumulative (non-decreasing) output",
+					i, len(prev.Content), len(snap.Content), prev.Content, snap.Content)
 			}
 		}
-		if !strings.Contains(out.result.Content, "line 10") {
-			t.Errorf("final Content = %q, want it to contain %q", out.result.Content, "line 10")
+		if !strings.Contains(out.result.Content, "line 10-250") {
+			t.Errorf("final Content = %q, want it to contain %q", out.result.Content, "line 10-250")
+		}
+
+		last := out.snapshots[len(out.snapshots)-1]
+		details := mustUnmarshalBashDetails(t, last.Data)
+		if details.Truncation == nil || !details.Truncation.Truncated {
+			t.Errorf("final streaming snapshot's Data.truncation = %+v, want truncated=true (2500 lines exceeds DefaultMaxLines=2000)", details.Truncation)
+		}
+		if details.FullOutputPath == "" {
+			t.Error("final streaming snapshot's Data.fullOutputPath = \"\", want non-empty (output overflowed, so it must have been spilled)")
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("ExecuteStream did not return within 10s")
