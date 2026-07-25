@@ -51,6 +51,11 @@ func (w *chunkWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// var _ ExecutionEnv = (*OSEnv)(nil) is asserted here rather than in env.go
+// because OSEnv only fully satisfies ExecutionEnv (Exec included) under this
+// file's //go:build unix tag; env.go alone doesn't define Exec.
+var _ ExecutionEnv = (*OSEnv)(nil)
+
 // Exec runs spec.Command via `bash -c` in a new process group. Timeout and
 // ctx cancellation both kill the process group and reap the process (via
 // cmd.Wait, run on a background goroutine so the kill path never blocks on

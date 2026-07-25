@@ -281,9 +281,14 @@ func (e *OSEnv) AppendFile(ctx context.Context, path string, data []byte) error 
 	if err != nil {
 		return fmt.Errorf("opening %q for append: %w", abs, err)
 	}
-	defer f.Close()
 	if _, err := f.Write(data); err != nil {
+		f.Close()
 		return fmt.Errorf("appending to %q: %w", abs, err)
+	}
+	// Close explicitly (no defer): a failed flush on close after a
+	// successful Write must still surface as an error, not be swallowed.
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %q after append: %w", abs, err)
 	}
 	return nil
 }

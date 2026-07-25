@@ -75,8 +75,9 @@ upstream's per-call-context design:
 ## Consequences
 
 - **Sandbox/remote adapters plug in at exactly this seam.** A future `ExecutionEnv` implementation
-  (container, remote filesystem, VM) only needs to satisfy 11 ctx-first methods returning plain
-  `(T, error)` — no `Result[T, E]` machinery, no per-call context threading — to be a drop-in `Env`
+  (container, remote filesystem, VM) only needs to satisfy 9 ctx-first methods returning plain
+  `(T, error)` plus the ctx-free `Cwd()` — no `Result[T, E]` machinery, no per-call context
+  threading — to be a drop-in `Env`
   for all four built-in tools simultaneously.
 - **Per-turn/per-call context is an app-layer concern, not a framework one.** An app that needs
   upstream's "workspace"-style per-call data implements it via `BashToolOptions.Prepare`/closures

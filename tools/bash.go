@@ -179,7 +179,16 @@ func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 			case capture.Cancelled:
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, "Command aborted")}, nil
 			case capture.TimedOut:
-				status := fmt.Sprintf("Command timed out after %s seconds", formatJSNumber(*p.Timeout))
+				// p.Timeout is nil-checked defensively: OSEnv only ever sets
+				// TimedOut when spec.Timeout > 0 (env_unix.go), which itself
+				// only happens when p.Timeout != nil above, so this branch is
+				// unreachable with a nil Timeout via OSEnv. A contract-
+				// violating ExecutionEnv that reports TimedOut regardless
+				// must not crash the process on the dereference.
+				status := "Command timed out"
+				if p.Timeout != nil {
+					status = fmt.Sprintf("Command timed out after %s seconds", formatJSNumber(*p.Timeout))
+				}
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, status)}, nil
 			case capture.ExitCode != 0:
 				status := fmt.Sprintf("Command exited with code %d", capture.ExitCode)
