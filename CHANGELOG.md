@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.8.0] - 2026-07-25
+
+### Added
+
+- **`tools` package: four built-in tools + the `ExecutionEnv` seam (AGENT-18 R2, ported from
+  upstream pi @0.82.0).** New subpackage `github.com/dev-resolute/resolute-agent-core-go/tools`
+  ships `read`, `write`, `edit`, and `bash` — the same model-facing tools upstream ships — over a
+  new `ExecutionEnv` interface (`tools/env.go`, `OSEnv` the local-process implementation) that
+  built-in-tool authors and sandbox/remote adapters both plug into. See ADR-0011 for the seam's
+  design (closure-captured, ctx-first, Go errors over `Result[T]`, pointer-identity mutation-queue
+  keys, POSIX-only). Model-facing strings (tool descriptions, error messages, truncation notices)
+  are byte-for-byte identical to upstream's, verified against
+  `packages/agent/src/harness/tools/*.ts` and pinned by dedicated schema/string tests per tool.
+  Highlights:
+  - **`read`**: offset/limit paging with continuation notices, line/byte truncation, and image
+    detection by content (magic-byte sniffing, not extension) with an injectable
+    `ReadToolOptions.ImageProcessor` for format conversion/resizing.
+  - **`write`**: creates parent directories automatically; routes through the mutation queue.
+  - **`edit`**: fuzzy multi-block replacement (`edits[]`), unified-diff + display-diff details,
+    BOM/CRLF-preserving I/O, a legacy `oldText`/`newText` argument shim, and symlink-aware
+    same-file serialization via the mutation queue.
+  - **`bash`**: streaming output with throttled partial updates, timeout/cancellation/non-zero-exit
+    status text, and full-output spill-to-temp-file when output is truncated — surviving even a
+    timeout (the spilled file's path is still reported in the error).
+  - **Mutation queue** (`tools/mutation_queue.go`): serializes concurrent `write`/`edit` calls that
+    target the same underlying file (by canonical, symlink-resolved path) so read-modify-write tool
+    implementations never race themselves; calls against different files proceed fully concurrently.
+- **`Tool[P].ExecuteStream` + `ToolUpdateEvent`: a streaming seam for tools that emit partial
+  results.** A tool may now set `ExecuteStream` instead of `Execute` to call `emit(ToolResult)` zero
+  or more times before returning its final result; each emitted partial result is delivered to the
+  prompt loop as an ephemeral `ToolUpdateEvent` on `EventStream.Events` — **never persisted** to the
+  transcript (only the final `ToolResult` is). A tool built from `Tool.ExecuteStream` still satisfies
+  plain `Execute` for callers that don't care about partial updates (`emit` is a silent no-op on that
+  path). `bash` is the first tool to use this.
+- **`ToolResult.Images` / `Message.Images` (+ `NewToolResultMsg`).** `ToolResult` gains an `Images
+  []llm.ImageContent` field so a tool (e.g. `read`, on an image file) can return image attachments
+  alongside text `Content`. `Message` gains the matching `Images` field, populated by the new
+  `NewToolResultMsg(callID, toolName string, result ToolResult) Message` constructor, which copies
+  `result.Images` through — additive; the existing `NewToolResult` constructor is unchanged and
+  still produces a `Message` with no `Images`. `DefaultConvertToLLM` threads `Message.Images` onto
+  the rebuilt `llm.ToolResultContent` so images reach the provider.
+- **`EstimateTokens` counts images at a flat 4800 chars each** (upstream 0.76.0 attachment
+  heuristic), applied to both the batch estimator and the per-message accounting used by
+  compaction's cut-point search — conservative per ADR-0003, and now exercised by real image-bearing
+  messages via the `read` tool rather than only a synthetic fixture.
+
+### Changed
+
+- **`resolute-llm-go` v0.8.2 → v0.9.0.** Paired dependency bump: adds `llm.ImageContent`, the type
+  `ToolResult.Images`/`Message.Images` carry and `DefaultConvertToLLM` threads onto
+  `llm.ToolResultContent`.
+
+### Fixed / Subsumed
+
+- **AGENT-14** (image content → attachment token accounting) and **AGENT-15** (truncate-tail port)
+  are fully subsumed by this release's `tools` package and `EstimateTokens` image accounting; both
+  issues are closed as absorbed by AGENT-18 R2 (see
+  `docs/prds/agent18-builtin-tools-images-streaming.md`).
+
+### Deliberate deviations from upstream (documented inline, not gaps)
+
+- **`readParams.Limit`/`bashParams.Timeout` are pointers (`*int`/`*float64`), not plain values,**
+  specifically so an explicit zero (`limit: 0`, `timeout: 0`) can be told apart from an omitted
+  field and validated the way upstream's `!== undefined` checks do — `limit: 0` selects a genuine
+  zero-line window (not "read to EOF"); `timeout: 0` is rejected exactly as upstream rejects it
+  (`timeout <= 0`), rather than silently collapsing to "no timeout enforced". See `read.go`/`bash.go`
+  package comments and `TestReadToolExplicitZeroLimitIsNotOmitted`/
+  `TestBashToolExplicitZeroTimeoutIsRejected`.
+- **`read`'s negative-`limit` clamp does not reproduce upstream's negative-index slice
+  reinterpretation.** For a negative `limit`, upstream's raw (unclamped) arithmetic can produce a
+  nonsensical negative `nextOffset` in its continuation notice (verified against upstream's actual
+  JS semantics — see `read.go`'s `TestReadToolNegativeLimitClampsSafely`). Go has no equivalent
+  negative-index slice reinterpretation (an unclamped range panics), so this port clamps `endLine`
+  to `startLine` instead, both to avoid crashing and to avoid propagating a nonsensical offset a
+  caller could never use. This is this port's own considered output for a degenerate input, not a
+  port of upstream's.
+
 ## [0.7.0] - 2026-07-21
 
 ### Added

@@ -9,8 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
+
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 // edit_test.go exercises edit.go, the port of
@@ -544,4 +549,207 @@ func TestEditToolEditsThroughSymlink(t *testing.T) {
 	if want := "after\n"; string(got) != want {
 		t.Errorf("target file content = %q, want %q", got, want)
 	}
+}
+
+// TestEditToolSerializesThroughMutationQueue proves the edit tool routes
+// through withFileMutationQueue (mutation_queue.go): a second edit() call
+// targeting the SAME path must block until the first edit's env.WriteFile
+// call completes, and the file ends up holding BOTH edits, applied in
+// order (the second edit's read must observe the first edit's write, not
+// race a stale copy of the file).
+//
+// Adapted from upstream's "keeps the mutation queue locked until an
+// aborted edit write settles" - like write_test.go's
+// TestWriteToolSerializesThroughMutationQueue, this proves the same
+// underlying serialization property without the AbortController-specific
+// half of that test, since mutation_queue.go's lock/fn is explicitly NOT
+// cancellable through ctx once acquired (see its doc comment) - the
+// abort-checks-inside-fn half is separately covered by
+// TestEditToolAbortedContextBeforeFileInfoReturnsOperationAborted; there is
+// nothing left of upstream's abort-then-second-edit scenario to exercise
+// here beyond ordinary same-path serialization.
+func TestEditToolSerializesThroughMutationQueue(t *testing.T) {
+	osEnv, dir := newTestOSEnv(t)
+	env := &blockingEditWriteEnv{
+		OSEnv:             osEnv,
+		firstWriteStarted: make(chan struct{}),
+		releaseFirstWrite: make(chan struct{}),
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile error: %v", err)
+	}
+	tool := NewEditTool(EditToolOptions{Env: env})
+	ctx := context.Background()
+
+	firstArgs := mustMarshal(t, editParams{Path: "file.txt", Edits: []editEntry{{OldText: "alpha", NewText: "ALPHA"}}})
+	secondArgs := mustMarshal(t, editParams{Path: "file.txt", Edits: []editEntry{{OldText: "beta", NewText: "BETA"}}})
+
+	firstDone := make(chan pi.ToolResult, 1)
+	go func() {
+		result, err := tool.Execute(ctx, "edit-first", firstArgs)
+		if err != nil {
+			t.Errorf("first edit Execute error: %v", err)
+		}
+		firstDone <- result
+	}()
+
+	select {
+	case <-env.firstWriteStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first edit's write never started")
+	}
+
+	secondDone := make(chan pi.ToolResult, 1)
+	go func() {
+		result, err := tool.Execute(ctx, "edit-second", secondArgs)
+		if err != nil {
+			t.Errorf("second edit Execute error: %v", err)
+		}
+		secondDone <- result
+	}()
+
+	// The second edit must remain blocked on the mutation queue's lock
+	// while the first edit's env.WriteFile call is still held open.
+	select {
+	case <-secondDone:
+		t.Fatal("second edit completed while the first edit's write was still held - mutation queue did not serialize")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if env.secondWriteStarted.Load() {
+		t.Fatal("second edit's env.WriteFile ran before the first edit's was released")
+	}
+
+	close(env.releaseFirstWrite)
+
+	var firstResult, secondResult pi.ToolResult
+	select {
+	case firstResult = <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first edit never completed after release")
+	}
+	select {
+	case secondResult = <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second edit never completed")
+	}
+
+	if firstResult.IsError {
+		t.Errorf("first edit result.IsError = true, Content: %q", firstResult.Content)
+	}
+	if secondResult.IsError {
+		t.Errorf("second edit result.IsError = true, Content: %q", secondResult.Content)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile error: %v", err)
+	}
+	if want := "ALPHA\nBETA\n"; string(got) != want {
+		t.Errorf("file content = %q, want %q (both edits must have landed, in order)", got, want)
+	}
+}
+
+// blockingEditWriteEnv wraps *OSEnv, blocking a WriteFile call whose content
+// is the first edit's expected output ("ALPHA\nbeta\n") until
+// releaseFirstWrite is closed, and recording whether a WriteFile call for
+// the second edit's expected output ("ALPHA\nBETA\n") started - the double
+// used by TestEditToolSerializesThroughMutationQueue to prove same-path
+// serialization deterministically (channels/atomics, no sleep-and-hope),
+// mirroring write_test.go's blockingWriteEnv.
+type blockingEditWriteEnv struct {
+	*OSEnv
+	firstWriteStarted  chan struct{}
+	releaseFirstWrite  chan struct{}
+	secondWriteStarted atomic.Bool
+}
+
+func (e *blockingEditWriteEnv) WriteFile(ctx context.Context, path string, data []byte) error {
+	switch string(data) {
+	case "ALPHA\nbeta\n":
+		close(e.firstWriteStarted)
+		<-e.releaseFirstWrite
+	case "ALPHA\nBETA\n":
+		e.secondWriteStarted.Store(true)
+	}
+	return e.OSEnv.WriteFile(ctx, path, data)
+}
+
+// TestEditToolSerializesConcurrentEditsThroughSymlinkAndCanonicalPath ports
+// upstream's "serializes concurrent edits through canonical and symlink
+// paths": two concurrent edit calls targeting the SAME underlying file
+// through DIFFERENT path strings (one via the canonical path, one via a
+// symlink to it) must still serialize through the mutation queue - proving
+// mutationQueueKey's symlink resolution (TestMutationQueueKey,
+// mutation_queue_test.go) actually PREVENTS the two calls from racing each
+// other, not merely that it computes the same key value in isolation.
+// slowReadEditEnv delays every ReadFile by 20ms, widening the race window:
+// without correct serialization, both calls would read the pre-edit
+// content concurrently and the second write would silently lose the
+// first edit (last-write-wins on stale data) - deterministically exposing
+// a broken queue instead of merely usually passing.
+func TestEditToolSerializesConcurrentEditsThroughSymlinkAndCanonicalPath(t *testing.T) {
+	osEnv, dir := newTestOSEnv(t)
+	env := &slowReadEditEnv{OSEnv: osEnv}
+	if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile error: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "target.txt"), filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatalf("os.Symlink error: %v", err)
+	}
+	tool := NewEditTool(EditToolOptions{Env: env})
+	ctx := context.Background()
+
+	targetArgs := mustMarshal(t, editParams{Path: "target.txt", Edits: []editEntry{{OldText: "alpha", NewText: "ALPHA"}}})
+	linkArgs := mustMarshal(t, editParams{Path: "link.txt", Edits: []editEntry{{OldText: "beta", NewText: "BETA"}}})
+
+	calls := []struct {
+		id   string
+		args json.RawMessage
+	}{
+		{"edit-target", targetArgs},
+		{"edit-link", linkArgs},
+	}
+	var wg sync.WaitGroup
+	results := make(chan pi.ToolResult, len(calls))
+	for _, call := range calls {
+		wg.Add(1)
+		go func(id string, args json.RawMessage) {
+			defer wg.Done()
+			result, err := tool.Execute(ctx, id, args)
+			if err != nil {
+				t.Errorf("%s Execute error: %v", id, err)
+				return
+			}
+			results <- result
+		}(call.id, call.args)
+	}
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.IsError {
+			t.Errorf("result.IsError = true, Content: %q", result.Content)
+		}
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "target.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile error: %v", err)
+	}
+	if want := "ALPHA\nBETA\ngamma\n"; string(got) != want {
+		t.Errorf("file content = %q, want %q (both concurrent edits, through different paths to the same file, must land - a broken mutation queue would lose one)", got, want)
+	}
+}
+
+// slowReadEditEnv wraps *OSEnv, delaying every ReadFile call by 20ms - the
+// double used by
+// TestEditToolSerializesConcurrentEditsThroughSymlinkAndCanonicalPath to
+// widen the race window a broken mutation queue would need to lose an
+// update through, mirroring upstream's SlowReadExecutionEnv.
+type slowReadEditEnv struct {
+	*OSEnv
+}
+
+func (e *slowReadEditEnv) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	time.Sleep(20 * time.Millisecond)
+	return e.OSEnv.ReadFile(ctx, path)
 }

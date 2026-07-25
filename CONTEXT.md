@@ -18,7 +18,7 @@
 
 ### Messages
 
-**Message**: Agent-side unit of transcript content. Struct with `Role`, `Type` (discriminator), and untyped `Body json.RawMessage`.
+**Message**: Agent-side unit of transcript content. Struct with `Role`, `Type` (discriminator), untyped `Body json.RawMessage`, and `Images []llm.ImageContent` (additive, v0.8.0) — image attachments kept outside `Body` so `Body` stays text-only and token estimation (`EstimateTokens`) can count images at a flat rate rather than parsing them out of the body. Populated by `NewToolResultMsg`, which copies a tool's `ToolResult.Images` through; the older `NewToolResult` constructor is unchanged and produces a `Message` with no `Images`. `DefaultConvertToLLM` threads `Images` onto the rebuilt `llm.ToolResultContent` so attachments reach the provider.
 
 **ConvertToLLM**: User-provided function called at the LLM-API boundary. Transforms agent transcript into provider-shaped payload.
 
@@ -31,6 +31,39 @@
 **ToolResult**: Concrete struct: `Content string`, `Data json.RawMessage`, `IsError bool`.
 
 **Dynamic tool**: Escape hatch for runtime-schema tools via `NewDynamicTool`.
+
+**Tool update**: An ephemeral partial `ToolResult` snapshot emitted by a tool built from
+`Tool[P].ExecuteStream` (via its `emit` callback) while it is still running — e.g. `bash`'s
+throttled partial output. Delivered to the prompt loop as a `ToolUpdateEvent` on
+`EventStream.Events`. **Never persisted**: only the tool's final `ToolResult` is written to the
+transcript; a tool update exists only for the duration of the in-flight prompt and is not
+recoverable from session storage or replay. A tool built from `ExecuteStream` still satisfies plain
+`Tool.Execute` for callers that don't care about partial updates — `emit` is a silent no-op on that
+path.
+
+**Built-in tools**: The `tools` subpackage
+(`github.com/dev-resolute/resolute-agent-core-go/tools`, v0.8.0) ships four model-facing tools
+ported from upstream pi @0.82.0 — `read`, `write`, `edit`, `bash` — over the `ExecutionEnv` seam.
+Core never imports it (same shape as `piskills`): importing core alone pulls in no
+filesystem/subprocess code. See ADR-0011 for the seam's design.
+
+**ExecutionEnv**: The filesystem/shell seam built-in tools run over (`tools.ExecutionEnv`,
+ADR-0011) — ctx-first methods (`ReadFile`, `WriteFile`, `AppendFile`, `CreateTemp`, `FileInfo`,
+`Exists`, `AbsolutePath`, `CanonicalPath`, `Exec`, ...) returning plain Go `(T, error)`, not
+upstream's `Result[T, E]`. `OSEnv` is the local-process implementation (real files, real
+subprocesses via `bash -c` in its own process group so timeout/cancellation can kill the whole
+process tree). Implementations MUST be pointer types — the mutation queue keys on instance
+identity. Sandbox/remote adapters plug in at this seam; there is no per-call context parameter
+(upstream's arbitrary `TContext`) — a tool closes over its `ExecutionEnv` at construction time,
+matching how every other tool in this port is built.
+
+**Mutation queue**: Serializes concurrent `write`/`edit` tool calls that target the same underlying
+file (`tools.withFileMutationQueue`, keyed by `{ExecutionEnv, canonical path}` — the same file
+reached via a symlink and via its real path shares one key) so a read-modify-write tool
+implementation never races itself; calls against different files, or the same path through
+different `ExecutionEnv` instances, proceed fully concurrently. The lock is held for the duration
+of the call and is **not** cancellable through `ctx` once acquired — only key resolution
+(`AbsolutePath`/`CanonicalPath`) is ctx-aware.
 
 **Registered vs active tools**: *Registered* tools are every tool on the Agent (`AgentConfig.Tools` / `SetTools`). *Active* tools are the subset offered to the model on a turn (`AgentConfig.ActiveToolNames` / `SetActiveTools`); a nil active set means all registered tools are active. The turn snapshot carries only the active subset, so an inactive tool is never offered to the model nor executed. Registered names must be unique and active names must reference registered tools without duplicates — validated by one shared helper at construction, `SetTools`, and `SetActiveTools` (`ErrDuplicateToolName`, `ErrUnknownActiveTool`).
 
@@ -48,7 +81,7 @@
 
 ### Events
 
-**AgentEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.
+**AgentEvent**: Sealed interface for events on `EventStream.Events`. Concrete variants: `TextDeltaEvent`, `ToolCallStartEvent`, `ToolCallEndEvent`, `ToolUpdateEvent` (see Tool update, v0.8.0), `ToolErrorEvent`, `ThinkingDeltaEvent`, `TurnStartEvent`, `TurnEndEvent`, `ErrorEvent`, `LLMRetryEvent`, `ThinkingUnsupportedEvent`, `ToolLeakEvent`, `UserMessageEvent`, `SteerInjectedEvent`, `FollowUpInjectedEvent`, `CompactionStartEvent`, `CompactionEndEvent`.
 
 ### Hooks
 
