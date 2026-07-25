@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"syscall"
 
 	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
@@ -195,18 +196,35 @@ func editAccessErrorMessage(path string, err error) string {
 // packages/agent/src/harness/env/nodejs.ts's toFileError, @0.82.0): a
 // backend-independent name for the KIND of failure, not a raw platform
 // errno. This Go ExecutionEnv seam has no typed FileError of its own (its
-// methods return plain `error`), so this reproduces only the two codes an
-// OSEnv-backed failure can actually distinguish - "not_found" (ENOENT, e.g.
-// editing a file that doesn't exist - upstream's nodejs.ts maps this same
-// ENOENT case to "not_found") and "permission_denied" (EACCES/EPERM) -
-// falling back to upstream's own catch-all "unknown" for anything else,
-// exactly as toFileError's default branch does for an unmapped errno.
+// methods return plain `error`), so this reproduces the errno-mapped codes
+// an OSEnv-backed failure can actually surface:
+//
+//   - "not_found" - ENOENT (e.g. editing a file that doesn't exist).
+//   - "permission_denied" - EACCES/EPERM.
+//   - "not_directory" - ENOTDIR (e.g. editing "file.txt/nested" where
+//     file.txt is itself a regular file, not a directory - Go's os.Lstat
+//     doesn't distinguish this from ENOENT via fs.ErrNotExist, so it needs
+//     its own errors.Is check against syscall.ENOTDIR).
+//   - "is_directory" - EISDIR.
+//   - "unknown" - upstream's own catch-all for anything else, exactly as
+//     toFileError's default branch does for an unmapped errno.
+//
+// Two of upstream's FileErrorCode values are deliberately NOT produced here:
+// "aborted" is handled separately in this file via ctx.Err() checks against
+// operationAbortedMessage, never through a FileError-shaped code; "invalid"
+// (EINVAL) and "not_supported" have no OSEnv call site in this package that
+// is known to produce them today, so mapping them would be speculative
+// rather than reproducing an observed behavior.
 func fileErrorCode(err error) string {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return "not_found"
 	case errors.Is(err, fs.ErrPermission):
 		return "permission_denied"
+	case errors.Is(err, syscall.ENOTDIR):
+		return "not_directory"
+	case errors.Is(err, syscall.EISDIR):
+		return "is_directory"
 	default:
 		return "unknown"
 	}

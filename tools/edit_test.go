@@ -3,9 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -238,6 +242,100 @@ func TestEditToolMissingFileErrorCode(t *testing.T) {
 	if want := "Could not edit file: does-not-exist.txt. Error code: not_found."; result.Content != want {
 		t.Errorf("result.Content = %q, want %q", result.Content, want)
 	}
+}
+
+// TestFileErrorCodeMapsAllReachableCodes pins fileErrorCode's full mapping
+// directly (bypassing the tool pipeline), including the two upstream
+// toFileError (nodejs.ts) branches it didn't originally cover:
+// ENOTDIR -> "not_directory" and EISDIR -> "is_directory". "is_directory" is
+// exercised here rather than end-to-end because edit.go's own FileInfo kind
+// check (runEdit) always intercepts an actual directory BEFORE any
+// ReadFile/WriteFile call could surface EISDIR - same as upstream's
+// edit.ts, which performs the identical kind check before ever touching
+// env.readTextFile/env.writeFile - so EISDIR has no reachable call site in
+// this tool's own pipeline to exercise it through, only through
+// fileErrorCode itself.
+func TestFileErrorCodeMapsAllReachableCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "not found", err: fmt.Errorf("wrap: %w", fs.ErrNotExist), want: "not_found"},
+		{name: "permission denied", err: fmt.Errorf("wrap: %w", fs.ErrPermission), want: "permission_denied"},
+		{name: "not a directory", err: fmt.Errorf("wrap: %w", syscall.ENOTDIR), want: "not_directory"},
+		{name: "is a directory", err: fmt.Errorf("wrap: %w", syscall.EISDIR), want: "is_directory"},
+		{name: "unmapped error falls back to unknown", err: errors.New("boom"), want: "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fileErrorCode(tt.err); got != tt.want {
+				t.Errorf("fileErrorCode(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEditToolNotADirectoryErrorCode pins fileErrorCode's ENOTDIR mapping
+// end-to-end, through the tool: editing a path that walks THROUGH a regular
+// file as though it were a directory (here, "file.txt/nested" where
+// file.txt is itself a plain file) fails at the OS level with ENOTDIR,
+// which - unlike ENOENT - does NOT satisfy errors.Is(err, fs.ErrNotExist)
+// in Go.
+//
+// This must reach runEdit's own env.FileInfo call (and thus
+// editAccessErrorMessage/fileErrorCode) rather than fail earlier, at
+// mutation_queue.go's own path-resolution step - which, ported faithfully
+// from upstream's getMutationQueueKey (file-mutation-queue.ts), ALSO throws
+// a raw, unformatted error for any canonicalPath failure other than
+// "not_found"/"not_supported", including "not_directory". Verified against
+// edit.ts + file-mutation-queue.ts: upstream itself produces that same raw,
+// pre-execute() error for this exact "file.txt/nested" scenario, never
+// reaching editAccessError's "Could not edit file: ..." formatting - so
+// testing THROUGH NewEditTool.Execute with a plain OSEnv would only prove
+// mutation_queue.go's own (already-tested, upstream-faithful) early exit,
+// not fileErrorCode's new mapping. canonicalPathSkippingEnv isolates
+// exactly what's under test here (same idiom as ctxIgnoringPathEnv in
+// write_test.go): it lets the mutation queue's key resolution succeed
+// trivially, so the SAME "file.txt/nested" path's ENOTDIR is instead first
+// surfaced by the real *OSEnv.FileInfo call inside runEdit, going through
+// editAccessErrorMessage/fileErrorCode as designed.
+func TestEditToolNotADirectoryErrorCode(t *testing.T) {
+	osEnv, dir := newTestOSEnv(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile error: %v", err)
+	}
+	env := &canonicalPathSkippingEnv{OSEnv: osEnv}
+	tool := NewEditTool(EditToolOptions{Env: env})
+
+	args := mustMarshal(t, editParams{
+		Path:  "file.txt/nested",
+		Edits: []editEntry{{OldText: "x", NewText: "y"}},
+	})
+	result, err := tool.Execute(context.Background(), "edit-1", args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("result.IsError = false, want true")
+	}
+	if want := "Could not edit file: file.txt/nested. Error code: not_directory."; result.Content != want {
+		t.Errorf("result.Content = %q, want %q", result.Content, want)
+	}
+}
+
+// canonicalPathSkippingEnv wraps *OSEnv, making CanonicalPath always
+// succeed (returning the plain absolute path, without ever calling
+// filepath.EvalSymlinks) - the double used by
+// TestEditToolNotADirectoryErrorCode to keep mutation_queue.go's own
+// path-resolution step from failing first, isolating fileErrorCode's ENOTDIR
+// mapping as reached from runEdit's own env.FileInfo call.
+type canonicalPathSkippingEnv struct {
+	*OSEnv
+}
+
+func (e *canonicalPathSkippingEnv) CanonicalPath(ctx context.Context, path string) (string, error) {
+	return e.OSEnv.AbsolutePath(ctx, path)
 }
 
 // TestEditToolEmptyEditsIsInvalid pins validateEditInput's exact message.
