@@ -21,6 +21,9 @@ type ToolResult struct {
 }
 
 // RegisteredTool is the internal interface that the agent loop uses to invoke tools.
+// Tools built from Tool.ExecuteStream support both call styles: Execute runs
+// them with partial updates discarded, and the unexported streamingTool
+// capability (checked via type assertion) runs them with updates observed.
 type RegisteredTool interface {
 	Name() string
 	Description() string
@@ -185,6 +188,16 @@ func (t *streamingTypedTool[P]) ExecuteStream(ctx context.Context, callID string
 		return ToolResult{}, err
 	}
 	return t.executeStream(ctx, params, emit)
+}
+
+// Execute overrides the embedded typedTool[P].Execute (whose execute field is
+// always nil on a streaming tool) so streaming-built tools remain callable
+// through the plain RegisteredTool.Execute contract: it runs the same
+// ExecuteStream path with a no-op emit, so partial updates are simply not
+// observed. This is what any caller (e.g. a harness) that invokes Execute
+// without first checking the streamingTool capability will get.
+func (t *streamingTypedTool[P]) Execute(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error) {
+	return t.ExecuteStream(ctx, callID, args, func(ToolResult) {})
 }
 
 type dynamicTool struct {

@@ -58,6 +58,31 @@ func TestNonStreamingToolLacksCapability(t *testing.T) {
 	}
 }
 
+// TestStreamOnlyToolSupportsPlainExecute pins the fix for the nil-pointer
+// landmine: a stream-only tool's embedded typedTool[P].execute field is nil,
+// so a caller that reaches RegisteredTool.Execute directly — without first
+// checking the streamingTool capability, e.g. a harness that only knows the
+// public interface — must not panic. Execute runs the ExecuteStream path
+// with a no-op emit, so partial updates are silently discarded.
+func TestStreamOnlyToolSupportsPlainExecute(t *testing.T) {
+	rt := NewTool(Tool[struct{}]{
+		Name: "streamer",
+		ExecuteStream: func(ctx context.Context, _ struct{}, emit func(ToolResult)) (ToolResult, error) {
+			emit(ToolResult{Content: "partial 1"})
+			emit(ToolResult{Content: "partial 2"})
+			return ToolResult{Content: "final"}, nil
+		},
+	})
+
+	res, err := rt.Execute(context.Background(), "c1", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute returned err = %v, want nil", err)
+	}
+	if res.Content != "final" {
+		t.Errorf("Execute result.Content = %q, want %q", res.Content, "final")
+	}
+}
+
 // TestNewToolRequiresAtLeastOneExecute pins the other half of the "exactly
 // one" contract: neither Execute nor ExecuteStream set must also panic.
 func TestNewToolRequiresAtLeastOneExecute(t *testing.T) {
