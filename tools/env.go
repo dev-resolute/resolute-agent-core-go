@@ -101,9 +101,12 @@ type ExecSpec struct {
 	Timeout time.Duration
 	// OnChunk, if set, is called with each chunk of output as it arrives.
 	// stdout and stderr are merged into a single stream, delivered in
-	// arrival order. OnChunk may be called concurrently with itself (from
-	// whichever of stdout/stderr produced output first) and must not
-	// retain the passed slice past the call.
+	// arrival order. Calls are serialized (mutex-guarded on the OSEnv
+	// implementation): OnChunk is never invoked concurrently with itself,
+	// and must not retain the passed slice past the call. Because calls
+	// are serialized, a slow or blocking OnChunk stalls output pumping for
+	// both stdout and stderr - it holds the underlying writer's lock for
+	// the duration of the call.
 	OnChunk func(chunk []byte)
 }
 
