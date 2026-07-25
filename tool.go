@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/dev-resolute/resolute-llm-go"
 	"github.com/invopop/jsonschema"
 )
 
@@ -15,6 +16,8 @@ type ToolResult struct {
 	Data      json.RawMessage
 	IsError   bool
 	Terminate bool
+	// Images carries optional image parts of the result (flows to llm.ToolResultContent.Images).
+	Images []llm.ImageContent
 }
 
 // RegisteredTool is the internal interface that the agent loop uses to invoke tools.

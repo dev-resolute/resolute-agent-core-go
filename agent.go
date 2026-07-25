@@ -440,6 +440,7 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 						Content:  content,
 						Data:     data,
 						IsError:  isError,
+						Images:   msg.Images,
 					},
 				})
 			}
@@ -461,6 +462,14 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 				Role:    msg.Role,
 				Content: llm.TextContent{Text: string(msg.Body)},
 			})
+		}
+
+		// tool_result images travel inside the ToolResultContent above, not as
+		// extra messages; every other role/type gets one llm.Message per image.
+		if msg.Type != "tool_result" {
+			for _, im := range msg.Images {
+				out = append(out, llm.Message{Role: msg.Role, Content: im})
+			}
 		}
 	}
 	return out

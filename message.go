@@ -1,7 +1,11 @@
 // Package pi provides a stateful agent loop built on pi-llm-go.
 package pi
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/dev-resolute/resolute-llm-go"
+)
 
 // Message is the agent-side unit of transcript content.
 // The framework treats Body as opaque bytes for user-defined custom message types.
@@ -9,6 +13,8 @@ type Message struct {
 	Role string
 	Type string
 	Body json.RawMessage
+	// Images carries attachments outside Body so Body stays text-only and token estimation can count images at a flat rate.
+	Images []llm.ImageContent `json:",omitempty"`
 }
 
 // NewText creates a text message.
@@ -43,16 +49,18 @@ func NewToolCallWithSignature(role string, callID, toolName string, args json.Ra
 	return Message{Role: role, Type: "tool_call", Body: body}
 }
 
-// NewToolResult creates a tool result message.
-func NewToolResult(role string, callID, toolName, content string, data json.RawMessage, isError bool) Message {
+// NewToolResult creates a tool result message from a ToolResult, copying its
+// Images to Message.Images (images ride the Message, never the JSON Body).
+// Tool results are always authored with role "tool".
+func NewToolResult(callID, toolName string, result ToolResult) Message {
 	body, _ := json.Marshal(map[string]any{
 		"call_id":   callID,
 		"tool_name": toolName,
-		"content":   content,
-		"data":      data,
-		"is_error":  isError,
+		"content":   result.Content,
+		"data":      result.Data,
+		"is_error":  result.IsError,
 	})
-	return Message{Role: role, Type: "tool_result", Body: body}
+	return Message{Role: "tool", Type: "tool_result", Body: body, Images: result.Images}
 }
 
 // NewThinking creates a thinking message.

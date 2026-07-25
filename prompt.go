@@ -729,7 +729,12 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 			content = res.err.Error()
 			isErr = true
 		}
-		msg := NewToolResult("tool", res.callID, res.name, content, res.result.Data, isErr)
+		msg := NewToolResult(res.callID, res.name, ToolResult{
+			Content: content,
+			Data:    res.result.Data,
+			IsError: isErr,
+			Images:  res.result.Images,
+		})
 		if err := r.appendTranscript(ctx, msg); err != nil {
 			return err
 		}

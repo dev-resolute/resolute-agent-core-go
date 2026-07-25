@@ -249,7 +249,7 @@ func TestFindCutPointSkipsToolResult(t *testing.T) {
 	msgs := []Message{
 		NewText("user", "a"),
 		NewToolCall("assistant", "c1", "calc", []byte(`{}`)),
-		NewToolResult("tool", "c1", "calc", "3", nil, false),
+		NewToolResult("c1", "calc", ToolResult{Content: "3"}),
 		NewText("user", "b"),
 		NewText("assistant", "c"),
 	}
