@@ -38,11 +38,20 @@ type ReadToolOptions struct {
 	ImageProcessor ReadImageProcessor
 }
 
-// readParams are the model-supplied arguments to the "read" tool.
+// readParams are the model-supplied arguments to the "read" tool. Limit is
+// *int, not int: upstream distinguishes an omitted limit (undefined, "read
+// to EOF") from an explicit limit of 0 ("read zero lines" - selects an
+// empty window, still reports a continuation notice) via `limit !==
+// undefined`. A plain int can't represent that distinction (its zero value
+// is indistinguishable from "omitted"), so nil means omitted and a non-nil
+// pointer - including one pointing at 0 - means the model supplied a limit.
+// Offset stays a plain int: upstream's own `offset ? ... : 0` treats
+// undefined, 0, and 1 identically (all three collapse to startLine 0), so
+// there is no equivalent distinction to preserve for Offset.
 type readParams struct {
 	Path   string `json:"path" jsonschema:"description=Path to the file to read (relative or absolute)"`
 	Offset int    `json:"offset,omitempty" jsonschema:"description=Line number to start reading from (1-indexed)"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"description=Maximum number of lines to read"`
+	Limit  *int   `json:"limit,omitempty" jsonschema:"description=Maximum number of lines to read"`
 }
 
 // readToolDescription is the "read" tool's model-facing description, ported
@@ -196,19 +205,30 @@ func readTextToolResult(p readParams, data []byte) (pi.ToolResult, error) {
 		}, nil
 	}
 
-	haveUserLimit := p.Limit != 0
+	haveUserLimit := p.Limit != nil
 	var selectedContent string
 	var userLimitedLines int
 	if haveUserLimit {
-		endLine := startLine + p.Limit
+		endLine := startLine + *p.Limit
 		if endLine > len(allLines) {
 			endLine = len(allLines)
 		}
-		// Deviation from upstream: JS's Array.slice never panics on an
-		// end-before-start range (it just yields an empty slice), but Go's
-		// slice expression does - a negative Limit (unvalidated model input,
-		// same as upstream's unvalidated Type.Number) would otherwise crash
-		// this tool instead of degrading to an empty selection.
+		// DELIBERATE deviation from upstream (NOT parity - no upstream test
+		// pins this input): upstream's own arithmetic is degenerate for a
+		// negative Limit. `Math.min(startLine + limit, allLines.length)`
+		// with limit < 0 yields a negative endLine, and JS's
+		// `allLines.slice(startLine, endLine)` reinterprets a negative end
+		// as "count back from the array's end" - producing a nonsensical
+		// negative nextOffset in the continuation notice. Traced literally
+		// against read.ts (packages/agent/src/harness/tools/read.ts:100-136
+		// @0.82.0): offset=1, limit=-5 on a 3-line file makes upstream emit
+		// "Use offset=-4 to continue." - not usable, not intentional
+		// behavior worth reproducing. Go's slice expression has no such
+		// negative-index reinterpretation: it panics outright when
+		// endLine < startLine. Rather than port upstream's accidental
+		// arithmetic (and its unusable negative offset), this clamps to an
+		// empty selection - a considered Go-side safety fix, not an attempt
+		// to match upstream's output for this degenerate input.
 		if endLine < startLine {
 			endLine = startLine
 		}

@@ -151,6 +151,34 @@ func TestWriteToolWriteFailureIsAnErrorResult(t *testing.T) {
 	}
 }
 
+// TestWriteToolAbortedContextBeforeWriteReturnsOperationAborted pins
+// write.ts:29's `if (signal?.aborted) throw new Error("Operation
+// aborted")` check, ported as `ctx.Err() != nil` (write.go). Uses
+// ctxIgnoringPathEnv so the pre-cancelled ctx reaches THIS check
+// specifically, rather than being rejected earlier by env.AbsolutePath's
+// own unrelated ctx.Err() early-return (OSEnv.AbsolutePath, env.go) -
+// isolating exactly what's under test: the write tool's own abort check,
+// not path resolution's.
+func TestWriteToolAbortedContextBeforeWriteReturnsOperationAborted(t *testing.T) {
+	osEnv, _ := newTestOSEnv(t)
+	env := &ctxIgnoringPathEnv{OSEnv: osEnv}
+	tool := NewWriteTool(WriteToolOptions{Env: env})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := tool.Execute(ctx, "write-1", mustMarshalWriteParams(t, "f.txt", "x"))
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil (failure must surface as ToolResult.IsError)", err)
+	}
+	if !result.IsError {
+		t.Fatalf("result.IsError = false, want true")
+	}
+	if result.Content != "Operation aborted" {
+		t.Errorf("result.Content = %q, want %q", result.Content, "Operation aborted")
+	}
+}
+
 // TestWriteToolSerializesThroughMutationQueue proves the write tool routes
 // through withFileMutationQueue (mutation_queue.go): a second write() call
 // targeting the SAME path must block until the first write's env.WriteFile
@@ -160,8 +188,10 @@ func TestWriteToolWriteFailureIsAnErrorResult(t *testing.T) {
 // serialization property (same-path writes never interleave) without the
 // AbortController-specific half of that test, since mutation_queue.go's
 // lock/fn is explicitly NOT cancellable through ctx once acquired (see its
-// doc comment) - there is nothing upstream's abort-then-second-write
-// scenario exercises here beyond ordinary same-path serialization.
+// doc comment) - the abort-checks-inside-fn half is separately covered by
+// TestWriteToolAbortedContextBeforeWriteReturnsOperationAborted; there is
+// nothing left of upstream's abort-then-second-write scenario to exercise
+// here beyond ordinary same-path serialization.
 func TestWriteToolSerializesThroughMutationQueue(t *testing.T) {
 	osEnv, dir := newTestOSEnv(t)
 	env := &blockingWriteEnv{
@@ -273,6 +303,24 @@ type erroringWriteEnv struct {
 
 func (e *erroringWriteEnv) WriteFile(ctx context.Context, path string, data []byte) error {
 	return e.writeErr
+}
+
+// ctxIgnoringPathEnv wraps *OSEnv, ignoring ctx cancellation in
+// AbsolutePath/CanonicalPath (which OSEnv otherwise rejects early - see
+// env.go) so a pre-cancelled ctx can reach write.go's own in-lock
+// ctx.Err() checks undisturbed - the double used by
+// TestWriteToolAbortedContextBeforeWriteReturnsOperationAborted to isolate
+// exactly what's under test.
+type ctxIgnoringPathEnv struct {
+	*OSEnv
+}
+
+func (e *ctxIgnoringPathEnv) AbsolutePath(_ context.Context, path string) (string, error) {
+	return e.OSEnv.AbsolutePath(context.Background(), path)
+}
+
+func (e *ctxIgnoringPathEnv) CanonicalPath(_ context.Context, path string) (string, error) {
+	return e.OSEnv.CanonicalPath(context.Background(), path)
 }
 
 // errWriteBoom is a fixed error value so

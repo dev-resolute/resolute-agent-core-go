@@ -38,6 +38,12 @@ type writeParams struct {
 // ported verbatim from upstream's createWriteTool.
 const writeToolDescription = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories."
 
+// operationAbortedMessage is upstream's `new Error("Operation aborted")`
+// text (write.ts:29,32), ported verbatim - it's checked both before and
+// after the write inside the mutation queue (see NewWriteTool), matching
+// upstream's `signal?.aborted` checks at the same two points.
+const operationAbortedMessage = "Operation aborted"
+
 // NewWriteTool creates the "write" tool: write content to a file, creating
 // the file (and its parent directories) if it doesn't exist and overwriting
 // it if it does. Ported from upstream's createWriteTool.
@@ -53,8 +59,21 @@ func NewWriteTool(opts WriteToolOptions) pi.RegisteredTool {
 			}
 
 			result, err := withFileMutationQueue(ctx, env, absolutePath, func() (pi.ToolResult, error) {
+				// Ported from write.ts:29 - checked once the mutation lock is
+				// held (mutation_queue.go's fn is not itself cancellable via
+				// ctx once running, but it's free to check ctx.Err() itself,
+				// same as upstream checking signal?.aborted inside its own
+				// queued closure) and again after the write completes
+				// (write.ts:32), so a cancellation racing the write is still
+				// caught before reporting success.
+				if ctx.Err() != nil {
+					return pi.ToolResult{IsError: true, Content: operationAbortedMessage}, nil
+				}
 				if err := env.WriteFile(ctx, absolutePath, []byte(p.Content)); err != nil {
 					return pi.ToolResult{IsError: true, Content: err.Error()}, nil
+				}
+				if ctx.Err() != nil {
+					return pi.ToolResult{IsError: true, Content: operationAbortedMessage}, nil
 				}
 				// The success message uses p.Path, the model's INPUT path,
 				// not absolutePath - matching upstream, which reports back

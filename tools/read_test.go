@@ -54,9 +54,19 @@ func newTinyBMP() []byte {
 	return data
 }
 
+// mustMarshalReadParams builds readParams JSON for tests that don't care
+// about the omitted-vs-explicit-zero limit distinction: limit == 0 means
+// "omit the field entirely" (readParams.Limit stays nil), matching every
+// existing call site's intent. Tests that specifically need an explicit
+// zero limit (readParams.Limit pointing at 0) construct readParams
+// directly instead - see TestReadToolExplicitZeroLimitIsNotOmitted.
 func mustMarshalReadParams(t *testing.T, path string, offset, limit int) json.RawMessage {
 	t.Helper()
-	raw, err := json.Marshal(readParams{Path: path, Offset: offset, Limit: limit})
+	var limitPtr *int
+	if limit != 0 {
+		limitPtr = &limit
+	}
+	raw, err := json.Marshal(readParams{Path: path, Offset: offset, Limit: limitPtr})
 	if err != nil {
 		t.Fatalf("json.Marshal(readParams) error: %v", err)
 	}
@@ -278,13 +288,29 @@ func TestReadToolRejectsOffsetBeyondEOF(t *testing.T) {
 	}
 }
 
-// TestReadToolNegativeLimitDoesNotPanic pins a Go-specific correctness fix:
-// upstream's `allLines.slice(startLine, endLine)` never throws when endLine
-// ends up before startLine (JS's Array.slice just yields an empty result),
-// but the equivalent Go slice expression panics on an end-before-start
-// range. A negative limit (unvalidated model input, same as upstream's
-// unvalidated Type.Number) must degrade gracefully, not crash the tool.
-func TestReadToolNegativeLimitDoesNotPanic(t *testing.T) {
+// TestReadToolNegativeLimitClampsSafely pins a Go deviation: negative limit
+// clamps safely - this is NOT an upstream-parity assertion, and no upstream
+// test pins this degenerate input.
+//
+// Traced literally, upstream's own arithmetic for this exact input (offset=1,
+// limit=-5, 3-line file) is degenerate: `Math.min(startLine + limit,
+// allLines.length)` = `Math.min(-5, 3)` = -5, and JS's
+// `allLines.slice(0, -5)` reinterprets that negative end as "count back
+// from the array's end" (clamped to 0), silently yielding an empty
+// selection - but the SAME raw (unclamped) arithmetic then also drives the
+// continuation notice's numbers, producing
+// "[8 more lines in file. Use offset=-4 to continue.]": a nonsensical
+// negative offset a caller could never use. That is upstream's actual,
+// verified behavior for this input - not something this port emulates.
+//
+// This port deliberately does NOT reproduce that arithmetic. Go's slice
+// expression has no negative-index reinterpretation (it panics outright on
+// endLine < startLine), so read.go clamps endLine to startLine instead -
+// both because leaving it unclamped would crash the tool, and because
+// clamping avoids propagating upstream's nonsensical negative nextOffset
+// into the notice. The assertion below is this port's own considered
+// output for this input, not a port of upstream's.
+func TestReadToolNegativeLimitClampsSafely(t *testing.T) {
 	env, dir := newTestOSEnv(t)
 	if err := os.WriteFile(filepath.Join(dir, "short.txt"), []byte("one\ntwo\nthree"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile error: %v", err)
@@ -300,6 +326,38 @@ func TestReadToolNegativeLimitDoesNotPanic(t *testing.T) {
 	}
 	if want := "\n\n[3 more lines in file. Use offset=1 to continue.]"; result.Content != want {
 		t.Errorf("result.Content = %q, want %q", result.Content, want)
+	}
+}
+
+// TestReadToolExplicitZeroLimitIsNotOmitted pins the readParams.Limit
+// pointer-vs-int distinction: upstream checks `limit !== undefined`, so an
+// explicit limit of 0 selects a zero-line window (not "no limit"/read to
+// EOF). Derived from upstream's arithmetic for offset omitted (startLine=0)
+// and limit=0: endLine = Math.min(0+0, len) = 0, selectedContent = "",
+// userLimitedLines = 0; then remaining = totalLines - 0, nextOffset =
+// 0 + 0 + 1 = 1.
+func TestReadToolExplicitZeroLimitIsNotOmitted(t *testing.T) {
+	env, dir := newTestOSEnv(t)
+	if err := os.WriteFile(filepath.Join(dir, "five.txt"), []byte("one\ntwo\nthree\nfour\nfive"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile error: %v", err)
+	}
+	tool := NewReadTool(ReadToolOptions{Env: env})
+
+	zero := 0
+	args, err := json.Marshal(readParams{Path: "five.txt", Limit: &zero})
+	if err != nil {
+		t.Fatalf("json.Marshal(readParams) error: %v", err)
+	}
+
+	result, err := tool.Execute(context.Background(), "read-zero-limit", args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true, Content: %q", result.Content)
+	}
+	if want := "\n\n[5 more lines in file. Use offset=1 to continue.]"; result.Content != want {
+		t.Errorf("result.Content = %q, want %q (explicit limit:0 must NOT be treated as omitted)", result.Content, want)
 	}
 }
 
