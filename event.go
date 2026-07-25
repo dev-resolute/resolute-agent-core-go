@@ -71,6 +71,17 @@ type ToolCallEndEvent struct {
 
 func (ToolCallEndEvent) isAgentEvent() {}
 
+// ToolUpdateEvent carries a partial-result snapshot from a running tool.
+// Zero or more are emitted between ToolCallStartEvent and ToolCallEndEvent.
+// Updates are ephemeral: events only, never persisted to the transcript.
+type ToolUpdateEvent struct {
+	CallID string
+	Name   string
+	Result ToolResult
+}
+
+func (ToolUpdateEvent) isAgentEvent() {}
+
 // ToolErrorEvent signals that a tool call errored.
 type ToolErrorEvent struct {
 	CallID   string

@@ -677,7 +677,15 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 				defer func() { <-sema }()
 			}
 
-			res, err := p.tool.Execute(ctx, p.callID, p.args)
+			var res ToolResult
+			var err error
+			if st, ok := p.tool.(streamingTool); ok {
+				res, err = st.ExecuteStream(ctx, p.callID, p.args, func(partial ToolResult) {
+					r.emit(ToolUpdateEvent{CallID: p.callID, Name: p.tool.Name(), Result: partial})
+				})
+			} else {
+				res, err = p.tool.Execute(ctx, p.callID, p.args)
+			}
 			if err != nil {
 				res = ToolResult{Content: err.Error(), IsError: true}
 			}

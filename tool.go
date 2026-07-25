@@ -29,6 +29,14 @@ type RegisteredTool interface {
 	IsSequential() bool
 }
 
+// streamingTool is an optional capability a RegisteredTool may implement to
+// stream partial results during execution. The execution site type-asserts
+// for it; tools built from Tool.Execute (rather than Tool.ExecuteStream) do
+// not implement it, so the assertion structurally distinguishes the two.
+type streamingTool interface {
+	ExecuteStream(ctx context.Context, callID string, args json.RawMessage, emit func(ToolResult)) (ToolResult, error)
+}
+
 // PrepareArgumentsFunc transforms raw LLM-supplied arguments before
 // unmarshalling into P. A typical use case is shimming a deprecated argument
 // shape — e.g. migrating a legacy_value key to the current value key —
@@ -42,20 +50,36 @@ type Tool[P any] struct {
 	Description string
 	Sequential  bool
 	Execute     func(ctx context.Context, params P) (ToolResult, error)
+	// ExecuteStream is the streaming alternative to Execute: it may call emit
+	// zero or more times with partial results before returning the final
+	// ToolResult. Exactly one of Execute or ExecuteStream must be set;
+	// NewTool panics otherwise. Partial results are ephemeral — the loop
+	// forwards each emit as a ToolUpdateEvent and never persists them to the
+	// transcript.
+	ExecuteStream func(ctx context.Context, params P, emit func(ToolResult)) (ToolResult, error)
 	// PrepareArguments is an optional hook that runs on raw args before
 	// unmarshalling into P. See PrepareArgumentsFunc for details.
 	PrepareArguments PrepareArgumentsFunc
 }
 
-// NewTool creates a RegisteredTool from a typed Tool.
+// NewTool creates a RegisteredTool from a typed Tool. Exactly one of
+// Execute or ExecuteStream must be set; NewTool panics otherwise, since
+// this is API misuse rather than a runtime condition.
 func NewTool[P any](t Tool[P]) RegisteredTool {
-	return &typedTool[P]{
+	if (t.Execute == nil) == (t.ExecuteStream == nil) {
+		panic("pi.NewTool: exactly one of Execute or ExecuteStream must be set (tool " + t.Name + ")")
+	}
+	base := typedTool[P]{
 		name:             t.Name,
 		description:      t.Description,
 		sequential:       t.Sequential,
 		execute:          t.Execute,
 		prepareArguments: t.PrepareArguments,
 	}
+	if t.ExecuteStream != nil {
+		return &streamingTypedTool[P]{typedTool: base, executeStream: t.ExecuteStream}
+	}
+	return &base
 }
 
 // DynamicToolOption configures an optional capability on a dynamic tool.
@@ -121,15 +145,46 @@ func (t *typedTool[P]) Schema() json.RawMessage {
 }
 
 func (t *typedTool[P]) Execute(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error) {
-	prepared, err := runPrepare(ctx, t.prepareArguments, args)
+	params, err := t.prepareParams(ctx, args)
 	if err != nil {
 		return ToolResult{}, err
 	}
-	var params P
-	if err := json.Unmarshal(prepared, &params); err != nil {
-		return ToolResult{}, fmt.Errorf("unmarshal tool params: %w", err)
-	}
 	return t.execute(ctx, params)
+}
+
+// prepareParams runs the PrepareArguments hook (if any) and unmarshals the
+// result into P. Shared by typedTool.Execute and streamingTypedTool.ExecuteStream
+// so both entry points apply identical argument handling.
+func (t *typedTool[P]) prepareParams(ctx context.Context, args json.RawMessage) (P, error) {
+	var params P
+	prepared, err := runPrepare(ctx, t.prepareArguments, args)
+	if err != nil {
+		return params, err
+	}
+	if err := json.Unmarshal(prepared, &params); err != nil {
+		return params, fmt.Errorf("unmarshal tool params: %w", err)
+	}
+	return params, nil
+}
+
+// streamingTypedTool is a typedTool[P] whose spec set ExecuteStream instead
+// of Execute. Embedding typedTool[P] reuses Name/Description/Schema/
+// IsSequential and the prepare/unmarshal pipeline; ExecuteStream is the only
+// addition. This is what makes the streamingTool capability structurally
+// present only on tools built from ExecuteStream — a plain typedTool[P]
+// never gains an ExecuteStream method.
+type streamingTypedTool[P any] struct {
+	typedTool[P]
+	executeStream func(ctx context.Context, params P, emit func(ToolResult)) (ToolResult, error)
+}
+
+// ExecuteStream implements the unexported streamingTool capability interface.
+func (t *streamingTypedTool[P]) ExecuteStream(ctx context.Context, callID string, args json.RawMessage, emit func(ToolResult)) (ToolResult, error) {
+	params, err := t.prepareParams(ctx, args)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return t.executeStream(ctx, params, emit)
 }
 
 type dynamicTool struct {
