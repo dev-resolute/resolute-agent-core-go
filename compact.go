@@ -148,12 +148,14 @@ func ShouldCompact(contextTokens, contextWindow int, settings CompactionSettings
 
 // EstimateTokens returns a rough token estimate using the chars/4 heuristic.
 // Per ADR-0003, this is a coarse approximation until local tokenizers land.
+// Images count 4800 chars each (upstream 0.76.0 attachment heuristic, AGENT-14); conservative per ADR-0003.
 func EstimateTokens(messages []Message) int {
 	var chars int
 	for _, msg := range messages {
 		chars += len(msg.Body)
 		chars += len(msg.Role)
 		chars += len(msg.Type)
+		chars += 4800 * len(msg.Images)
 	}
 	return (chars + 3) / 4 // round up
 }
@@ -359,7 +361,8 @@ func findCutPoint(msgs []Message, keepRecentTokens int) int {
 }
 
 func estimateMessageTokens(m Message) int {
-	chars := len(m.Body) + len(m.Role) + len(m.Type)
+	// Images count 4800 chars each (upstream 0.76.0 attachment heuristic, AGENT-14); conservative per ADR-0003.
+	chars := len(m.Body) + len(m.Role) + len(m.Type) + 4800*len(m.Images)
 	return (chars + 3) / 4
 }
 
