@@ -729,7 +729,7 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 			content = res.err.Error()
 			isErr = true
 		}
-		msg := NewToolResult(res.callID, res.name, ToolResult{
+		msg := NewToolResultMsg(res.callID, res.name, ToolResult{
 			Content: content,
 			Data:    res.result.Data,
 			IsError: isErr,

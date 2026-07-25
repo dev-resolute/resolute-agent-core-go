@@ -30,7 +30,7 @@ func TestConvertUserMessageWithImages(t *testing.T) {
 }
 
 func TestConvertToolResultWithImages(t *testing.T) {
-	m := NewToolResult("call_1", "read", ToolResult{
+	m := NewToolResultMsg("call_1", "read", ToolResult{
 		Content: "Read image file [image/png]",
 		Images:  []llm.ImageContent{img(7)},
 	})

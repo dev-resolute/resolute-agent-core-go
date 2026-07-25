@@ -49,10 +49,23 @@ func NewToolCallWithSignature(role string, callID, toolName string, args json.Ra
 	return Message{Role: role, Type: "tool_call", Body: body}
 }
 
-// NewToolResult creates a tool result message from a ToolResult, copying its
-// Images to Message.Images (images ride the Message, never the JSON Body).
-// Tool results are always authored with role "tool".
-func NewToolResult(callID, toolName string, result ToolResult) Message {
+// NewToolResult creates a tool result message.
+func NewToolResult(role string, callID, toolName, content string, data json.RawMessage, isError bool) Message {
+	body, _ := json.Marshal(map[string]any{
+		"call_id":   callID,
+		"tool_name": toolName,
+		"content":   content,
+		"data":      data,
+		"is_error":  isError,
+	})
+	return Message{Role: role, Type: "tool_result", Body: body}
+}
+
+// NewToolResultMsg is the ToolResult-aware variant of NewToolResult: it takes
+// the tool's ToolResult directly and copies result.Images to Message.Images
+// (images ride the Message, never the JSON Body). Tool results are always
+// authored with role "tool".
+func NewToolResultMsg(callID, toolName string, result ToolResult) Message {
 	body, _ := json.Marshal(map[string]any{
 		"call_id":   callID,
 		"tool_name": toolName,
