@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dev-resolute/resolute-llm-go"
@@ -418,43 +417,29 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 	return a.summarizeWithLLM(ctx, provider, modelID, prefixMsgs)
 }
 
-// splitTurnSummarize runs two concurrent summarization calls when the cut point
-// falls mid-turn, concatenating the results.
+// splitTurnSummarize runs two summarization calls when the cut point falls
+// mid-turn, strictly in sequence (upstream #5536: single-concurrency
+// providers must not see overlapping generations; serial calls also keep
+// OnSummarizationRetry lifecycle events ordered). The turn-prefix call is
+// never issued if history summarization fails.
 func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider, modelID string, prep *compactionPrep) (string, error) {
-	// History prefix summarization. The instruction goes after the transcript
-	// — its wording references "the messages above" (AGENT-17).
 	historyMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
 	historyMsgs = append(historyMsgs, NewText("user", SummarizationPrompt))
 
-	// Turn prefix summarization.
+	historySummary, err := a.summarizeWithLLM(ctx, provider, modelID, historyMsgs)
+	if err != nil {
+		return "", fmt.Errorf("history summarization: %w", err)
+	}
+
 	turnMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
 	turnMsgs = append(turnMsgs, NewText("user", TurnPrefixSummarizationPrompt))
 
-	var historySummary, turnSummary string
-	var historyErr, turnErr error
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		historySummary, historyErr = a.summarizeWithLLM(ctx, provider, modelID, historyMsgs)
-	}()
-
-	go func() {
-		defer wg.Done()
-		turnSummary, turnErr = a.summarizeWithLLM(ctx, provider, modelID, turnMsgs)
-	}()
-
-	wg.Wait()
-
-	if historyErr != nil {
-		return "", fmt.Errorf("history summarization: %w", historyErr)
-	}
-	if turnErr != nil {
-		return "", fmt.Errorf("turn prefix summarization: %w", turnErr)
+	turnSummary, err := a.summarizeWithLLM(ctx, provider, modelID, turnMsgs)
+	if err != nil {
+		return "", fmt.Errorf("turn prefix summarization: %w", err)
 	}
 
-	return historySummary + "\n" + turnSummary, nil
+	return historySummary + "\n\n---\n\n**Turn Context (split turn):**\n\n" + turnSummary, nil
 }
 
 // summarizeWithLLM calls the provider to produce a summary from the given

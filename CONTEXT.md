@@ -90,7 +90,7 @@ of the call and is **not** cancellable through `ctx` once acquired — only key 
 **Hook context structs**: Each hook receives a concrete per-hook context struct (`BeforeToolCallCtx`, `BeforeCompactCtx`, etc.).
 
 **OnSummarizationRetry**:
-Optional `Hooks` field fired at each retry-lifecycle point (scheduled, attempt-start, finished) when a Compact summarization call fails transiently and `AgentConfig.SummarizationRetry` allows a retry. May fire concurrently from split-turn summarization's two goroutines. The Go-shaped equivalent of upstream 0.81.1's `summarization_retry_*` events — Compact has no EventStream, so a hook is the delivery path.
+Optional `Hooks` field fired at each retry-lifecycle point (scheduled, attempt-start, finished) when a Compact summarization call fails transiently and `AgentConfig.SummarizationRetry` allows a retry. Fires serially; split-turn summarization runs its two calls in sequence (v0.9.0, upstream #5536). The Go-shaped equivalent of upstream 0.81.1's `summarization_retry_*` events — Compact has no EventStream, so a hook is the delivery path.
 _Avoid_: SummarizationRetryEvent (ours is a hook, not an AgentEvent)
 
 ### Session storage

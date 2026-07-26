@@ -22,10 +22,10 @@ type Hooks struct {
 	// OnSummarizationRetry is called at each retry-lifecycle point when a
 	// summarization call made by Compact fails transiently and
 	// AgentConfig.SummarizationRetry allows a retry. It is never called when
-	// the policy disables retries or the first call succeeds. It may be called
-	// concurrently: split-turn summarization runs two retried calls in
-	// parallel goroutines. It must not call back into the Agent. Nil is a
-	// no-op.
+	// the policy disables retries or the first call succeeds. Calls are
+	// serial: split-turn summarization runs its two summarization calls in
+	// sequence, so lifecycle events never interleave. It must not call back
+	// into the Agent. Nil is a no-op.
 	OnSummarizationRetry func(ctx context.Context, c SummarizationRetryCtx)
 
 	// ShouldStopAfterTurn is called at each turn boundary — after turn_end is

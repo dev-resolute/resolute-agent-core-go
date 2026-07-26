@@ -91,6 +91,14 @@ func (r *retryHookRecorder) last() (SummarizationRetryCtx, bool) {
 	return r.events[len(r.events)-1], true
 }
 
+func (r *retryHookRecorder) snapshot() []SummarizationRetryCtx {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]SummarizationRetryCtx, len(r.events))
+	copy(out, r.events)
+	return out
+}
+
 // newCompactableAgent builds an Agent with a session long enough to compact.
 func newCompactableAgent(t *testing.T, provider llm.LLMProvider, policy SummarizationRetryPolicy, rec *retryHookRecorder) (*Agent, SessionID) {
 	t.Helper()
@@ -286,10 +294,60 @@ func TestCompactSummarizationRetryAbortDuringBackoff(t *testing.T) {
 	}
 }
 
-// TestSplitTurnSummarizeRetriesBothCalls drives the split-turn path directly:
-// both concurrent summarization calls fail once, then succeed.
+// positionalFailProvider fails on specific 1-indexed calls (by call arrival
+// order) and succeeds on every other call. Unlike flakySummarizingProvider's
+// shared failure budget, failures are pinned to exact call numbers so tests
+// can exercise deterministic retry patterns across strictly sequential calls.
+type positionalFailProvider struct {
+	mu      sync.Mutex
+	calls   int
+	failAt  map[int]bool
+	failErr error
+}
+
+func (*positionalFailProvider) Name() string { return "test" }
+
+func (*positionalFailProvider) Capabilities(string) llm.ProviderCapabilities {
+	return llm.ProviderCapabilities{Streaming: true}
+}
+
+func (p *positionalFailProvider) Stream(ctx context.Context, req llm.LLMRequest) llm.EventStream {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+
+	events := make(chan llm.LLMEvent, 2)
+	done := make(chan llm.StreamResult, 1)
+	if p.failAt[n] {
+		close(events)
+		done <- llm.StreamResult{Messages: req.Messages, Err: p.failErr}
+	} else {
+		events <- llm.TextDeltaEvent{Delta: "## Goal\nsummarized"}
+		close(events)
+		done <- llm.StreamResult{Messages: append(req.Messages, llm.Message{
+			Role:    "assistant",
+			Content: llm.TextContent{Text: "## Goal\nsummarized"},
+		})}
+	}
+	close(done)
+	return llm.NewEventStream(events, done)
+}
+
+func (p *positionalFailProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestSplitTurnSummarizeRetriesBothCalls drives the split-turn path directly.
+// Since split-turn calls now run strictly in sequence (AGENT-19, upstream
+// #5536), the history call's entire retry lifecycle (fail once, then
+// succeed) completes before the turn-prefix call starts, fails once, and
+// retries to success in turn — so both the call count and the hook phase
+// sequence are fully deterministic.
 func TestSplitTurnSummarizeRetriesBothCalls(t *testing.T) {
-	provider := &flakySummarizingProvider{failures: 2, failErr: errors.New("429 too many requests")}
+	provider := &positionalFailProvider{failAt: map[int]bool{1: true, 3: true}, failErr: errors.New("429 too many requests")}
 	rec := &retryHookRecorder{}
 	agent, err := NewAgent(AgentConfig{
 		Providers:          []llm.LLMProvider{provider},
@@ -315,16 +373,26 @@ func TestSplitTurnSummarizeRetriesBothCalls(t *testing.T) {
 		t.Errorf("summary = %q, want it to contain the provider's summary text", got)
 	}
 	if calls := provider.callCount(); calls != 4 {
-		t.Errorf("provider calls = %d, want 4 (2 concurrent calls, 1 retry each)", calls)
+		t.Errorf("provider calls = %d, want 4 (1 initial + 1 retry, per call)", calls)
 	}
 
-	// Each side fires Scheduled, AttemptStart, Finished — order between the two
-	// concurrent sides is interleaved, so count phases instead of comparing sequences.
-	counts := map[SummarizationRetryPhase]int{}
-	for _, p := range rec.phases() {
-		counts[p]++
+	wantPhases := []SummarizationRetryPhase{
+		SummarizationRetryScheduled, SummarizationRetryAttemptStart, SummarizationRetryFinished,
+		SummarizationRetryScheduled, SummarizationRetryAttemptStart, SummarizationRetryFinished,
 	}
-	if counts[SummarizationRetryScheduled] != 2 || counts[SummarizationRetryAttemptStart] != 2 || counts[SummarizationRetryFinished] != 2 {
-		t.Errorf("phase counts = %v, want 2 of each", counts)
+	events := rec.snapshot()
+	gotPhases := rec.phases()
+	if len(gotPhases) != len(wantPhases) {
+		t.Fatalf("phases = %v, want %v", gotPhases, wantPhases)
+	}
+	for i, ph := range wantPhases {
+		if gotPhases[i] != ph {
+			t.Fatalf("phases = %v, want %v (calls interleaved instead of running strictly in sequence)", gotPhases, wantPhases)
+		}
+	}
+	for _, i := range []int{2, 5} {
+		if !events[i].Success {
+			t.Errorf("Finished event %d = %+v, want Success", i, events[i])
+		}
 	}
 }
