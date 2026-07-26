@@ -49,6 +49,8 @@ type ThinkingDeltaEvent struct{ Delta string }
 func (ThinkingDeltaEvent) isAgentEvent() {}
 
 // ToolCallStartEvent signals that a tool call has started.
+// v0.9.0 guarantee: fires once per tool call when the call is finalized at the
+// provider's ToolCallEndEvent, always carrying complete arguments.
 // ThoughtSignature is the provider's opaque per-call signature (Gemini 3);
 // nil for providers without one. Event consumers that persist tool calls
 // outside the transcript (e.g. a durable harness) must carry it so replayed

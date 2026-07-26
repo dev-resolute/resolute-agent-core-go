@@ -22,7 +22,7 @@
 
 **ConvertToLLM**: User-provided function called at the LLM-API boundary. Transforms agent transcript into provider-shaped payload.
 
-**Thought signature**: Opaque byte token Gemini 3 attaches to a tool call and requires back verbatim when the call is replayed — missing it rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models. The prompt runner copies it from `llm.ToolCallStartEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), and `DefaultConvertToLLM` replays it through `Message.ToolCallThoughtSignature()` onto the rebuilt `llm.ToolCallContent`. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini 3 must replay it the same way.
+**Thought signature**: Opaque byte token Gemini 3 attaches to a tool call and requires back verbatim when the call is replayed — missing it rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models. The prompt runner copies it from `llm.ToolCallEndEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), and `DefaultConvertToLLM` replays it through `Message.ToolCallThoughtSignature()` onto the rebuilt `llm.ToolCallContent`. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini 3 must replay it the same way.
 
 ### Tools
 

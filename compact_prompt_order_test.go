@@ -11,7 +11,7 @@ import (
 )
 
 // capturingProvider records every summarization request it receives and
-// answers with a fixed summary. Safe for the concurrent split-turn calls.
+// answers with a fixed summary. Calls are serialized per turn (v0.9.0).
 type capturingProvider struct {
 	mu       sync.Mutex
 	requests [][]llm.Message

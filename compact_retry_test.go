@@ -13,8 +13,8 @@ import (
 )
 
 // flakySummarizingProvider fails its first `failures` Stream calls with
-// failErr, then answers with a fixed summary. Safe for the concurrent
-// split-turn calls.
+// failErr, then answers with a fixed summary. Calls are serialized per turn
+// (v0.9.0).
 type flakySummarizingProvider struct {
 	mu       sync.Mutex
 	failures int
