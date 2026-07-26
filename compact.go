@@ -515,8 +515,12 @@ func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, 
 }
 
 // summarizeOnce performs a single summarization call and collects the streamed
-// text and token usage. Callers wanting retry behavior should call
-// summarizeWithLLM.
+// text and usage. Callers wanting retry behavior should call summarizeWithLLM.
+// The request deliberately carries no SessionID: summarization is a standalone
+// request that must stay cache- and affinity-isolated from the turn (upstream
+// #6618 uses a fresh routing id per call with prompt caching disabled; an
+// absent SessionID achieves the same isolation here — no affinity headers, no
+// prompt_cache_key). Covered by TestSummarizationRequestsCarryNoSessionID.
 func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, *Usage, error) {
 	llmMsgs := DefaultConvertToLLM(msgs)
 	req := llm.LLMRequest{
