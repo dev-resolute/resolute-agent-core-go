@@ -272,7 +272,7 @@ func (a *Agent) Compact(ctx context.Context, opts CompactOpts) (*CompactResult, 
 		}
 	}
 
-	summary, err := a.summarize(ctx, sid, prep)
+	summary, usage, err := a.summarize(ctx, sid, prep)
 	if err != nil {
 		return nil, fmt.Errorf("summarization failed: %w", err)
 	}
@@ -282,6 +282,7 @@ func (a *Agent) Compact(ctx context.Context, opts CompactOpts) (*CompactResult, 
 		EndIdx:    prep.cutIdx,
 		Summary:   summary,
 		CreatedAt: time.Now(),
+		Usage:     usage,
 	}
 
 	if err := a.session.AppendBranchSummary(ctx, sid, bs); err != nil {
@@ -374,16 +375,16 @@ func isValidCutPoint(m Message) bool {
 }
 
 // summarize runs the LLM summarization for the given compaction plan.
-func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPrep) (string, error) {
+func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPrep) (string, *Usage, error) {
 	// Use the agent's default provider + model for summarization.
 	provider := a.config.Providers[0]
 	model := a.config.DefaultModel
 	if model == "" {
-		return "", fmt.Errorf("no model configured for summarization: %w", ErrInvalidModel)
+		return "", nil, fmt.Errorf("no model configured for summarization: %w", ErrInvalidModel)
 	}
 	_, modelID, err := parseModelRef(model)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// The instruction prompts say "the messages above", so the transcript to
@@ -393,7 +394,7 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 	// Check if there is an existing summary to update.
 	summaries, err := a.session.LoadBranchSummaries(ctx, sid)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	if len(summaries) > 0 {
@@ -422,24 +423,40 @@ func (a *Agent) summarize(ctx context.Context, sid SessionID, prep *compactionPr
 // providers must not see overlapping generations; serial calls also keep
 // OnSummarizationRetry lifecycle events ordered). The turn-prefix call is
 // never issued if history summarization fails.
-func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider, modelID string, prep *compactionPrep) (string, error) {
+func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider, modelID string, prep *compactionPrep) (string, *Usage, error) {
 	historyMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
 	historyMsgs = append(historyMsgs, NewText("user", SummarizationPrompt))
 
-	historySummary, err := a.summarizeWithLLM(ctx, provider, modelID, historyMsgs)
+	historySummary, historyUsage, err := a.summarizeWithLLM(ctx, provider, modelID, historyMsgs)
 	if err != nil {
-		return "", fmt.Errorf("history summarization: %w", err)
+		return "", nil, fmt.Errorf("history summarization: %w", err)
 	}
 
 	turnMsgs := append([]Message{NewSystem(SummarizationSystemPrompt)}, prep.prefix...)
 	turnMsgs = append(turnMsgs, NewText("user", TurnPrefixSummarizationPrompt))
 
-	turnSummary, err := a.summarizeWithLLM(ctx, provider, modelID, turnMsgs)
+	turnSummary, turnUsage, err := a.summarizeWithLLM(ctx, provider, modelID, turnMsgs)
 	if err != nil {
-		return "", fmt.Errorf("turn prefix summarization: %w", err)
+		return "", nil, fmt.Errorf("turn prefix summarization: %w", err)
 	}
 
-	return historySummary + "\n\n---\n\n**Turn Context (split turn):**\n\n" + turnSummary, nil
+	combined := historySummary + "\n\n---\n\n**Turn Context (split turn):**\n\n" + turnSummary
+	return combined, combineUsage(historyUsage, turnUsage), nil
+}
+
+// combineUsage sums two optional usages; a single non-nil side stands alone
+// (upstream compaction.ts combineUsage semantics).
+func combineUsage(a, b *Usage) *Usage {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &Usage{
+		InputTokens:  a.InputTokens + b.InputTokens,
+		OutputTokens: a.OutputTokens + b.OutputTokens,
+	}
 }
 
 // summarizeWithLLM calls the provider to produce a summary from the given
@@ -447,12 +464,12 @@ func (a *Agent) splitTurnSummarize(ctx context.Context, provider llm.LLMProvider
 // (upstream 0.81.1 parity). Retry lifecycle is reported through the
 // OnSummarizationRetry hook; the hook never fires when the policy disables
 // retries or the first call succeeds.
-func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, error) {
+func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, *Usage, error) {
 	policy := a.config.SummarizationRetry.normalized()
 
-	summary, err := a.summarizeOnce(ctx, provider, modelID, msgs)
+	summary, usage, err := a.summarizeOnce(ctx, provider, modelID, msgs)
 	if err == nil || policy.MaxRetries == 0 || !isTransientSummarizationError(err) {
-		return summary, err
+		return summary, usage, err
 	}
 
 	for attempt := 1; ; attempt++ {
@@ -470,21 +487,21 @@ func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, 
 				Attempt: attempt,
 				Err:     err,
 			})
-			return "", fmt.Errorf("summarization retry wait: %w", sleepErr)
+			return "", nil, fmt.Errorf("summarization retry wait: %w", sleepErr)
 		}
 		a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
 			Phase:   SummarizationRetryAttemptStart,
 			Attempt: attempt,
 		})
 
-		summary, err = a.summarizeOnce(ctx, provider, modelID, msgs)
+		summary, usage, err = a.summarizeOnce(ctx, provider, modelID, msgs)
 		if err == nil {
 			a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
 				Phase:   SummarizationRetryFinished,
 				Attempt: attempt,
 				Success: true,
 			})
-			return summary, nil
+			return summary, usage, nil
 		}
 		if attempt >= policy.MaxRetries || !isTransientSummarizationError(err) {
 			a.notifySummarizationRetry(ctx, SummarizationRetryCtx{
@@ -492,14 +509,15 @@ func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, 
 				Attempt: attempt,
 				Err:     err,
 			})
-			return "", err
+			return "", nil, err
 		}
 	}
 }
 
 // summarizeOnce performs a single summarization call and collects the streamed
-// text. Callers wanting retry behavior should call summarizeWithLLM.
-func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, error) {
+// text and token usage. Callers wanting retry behavior should call
+// summarizeWithLLM.
+func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, *Usage, error) {
 	llmMsgs := DefaultConvertToLLM(msgs)
 	req := llm.LLMRequest{
 		Model:    modelID,
@@ -508,16 +526,24 @@ func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, mod
 
 	stream := provider.Stream(ctx, req)
 	var summary strings.Builder
+	var usage *Usage
 	for ev := range stream.Events {
-		if td, ok := ev.(llm.TextDeltaEvent); ok {
-			summary.WriteString(td.Delta)
+		switch e := ev.(type) {
+		case llm.TextDeltaEvent:
+			summary.WriteString(e.Delta)
+		case llm.UsageEvent:
+			if usage == nil {
+				usage = &Usage{}
+			}
+			usage.InputTokens += e.InputTokens
+			usage.OutputTokens += e.OutputTokens
 		}
 	}
 	result := <-stream.Done
 	if result.Err != nil {
-		return "", result.Err
+		return "", nil, result.Err
 	}
-	return strings.TrimSpace(summary.String()), nil
+	return strings.TrimSpace(summary.String()), usage, nil
 }
 
 // notifySummarizationRetry fires the OnSummarizationRetry hook if configured.

@@ -365,7 +365,7 @@ func TestSplitTurnSummarizeRetriesBothCalls(t *testing.T) {
 		prefix:   []Message{NewText("user", "do the thing"), NewText("assistant", "working on it")},
 		keptTail: []Message{NewText("user", "recent work kept verbatim")},
 	}
-	got, err := agent.splitTurnSummarize(context.Background(), provider, "model", prep)
+	got, _, err := agent.splitTurnSummarize(context.Background(), provider, "model", prep)
 	if err != nil {
 		t.Fatalf("splitTurnSummarize: %v", err)
 	}

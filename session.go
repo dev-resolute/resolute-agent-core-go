@@ -15,12 +15,23 @@ type SessionMeta struct {
 	UpdatedAt time.Time
 }
 
+// Usage records provider token usage for the LLM call(s) that produced an
+// artifact. Values are sums when multiple calls contributed (split-turn
+// compaction runs two).
+type Usage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
+}
+
 // BranchSummary is a persisted compaction artifact.
 type BranchSummary struct {
 	StartIdx  int
 	EndIdx    int
 	Summary   string
 	CreatedAt time.Time
+	// Usage is the summarization call usage; nil when the provider reported
+	// none. Split-turn compaction sums both calls (upstream #6671).
+	Usage *Usage `json:"Usage,omitempty"`
 }
 
 // SessionRepo is the interface every storage backend implements.
