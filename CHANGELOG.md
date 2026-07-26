@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.9.0] - 2026-07-25
+
+### Breaking (custom `llm.LLMProvider` test doubles only)
+
+- **Tool calls are now collected from the finalized `llm.ToolCallEndEvent`, not
+  `llm.ToolCallStartEvent` (AGENT-22, upstream #6285).** openai-compat-shaped providers stream
+  tool-call arguments incrementally and only finalize them on the end event; collecting at the
+  start event executed tools with nil args and durably recorded nil args in harness logs. **Any
+  custom `llm.LLMProvider` test double that emits `ToolCallStartEvent` with the call's args and a
+  bare `ToolCallEndEvent{CallID: ...}` (no `ToolName`/`Args`) must be updated to put the finalized
+  `ToolName` and `Args` on the end event** — the agent no longer reads them off the start event.
+  Real providers are unaffected; this only breaks fixtures/test doubles that modeled the older
+  event contract.
+
+### Changed
+
+- **`resolute-llm-go` v0.9.0 → v0.10.0.** Paired dependency bump required by the
+  `ToolCallEndEvent`-sourced tool-call collection above.
+- **Split-turn summarization calls are now serialized (AGENT-19, upstream #5536).** The history-prefix
+  and turn-prefix summarization calls that a mid-turn compaction cut point requires ran concurrently
+  since v0.7.0; they now run strictly in sequence — history first, short-circuiting before the
+  turn-prefix call is ever issued if history summarization fails — because single-concurrency
+  providers must not see overlapping generations and `OnSummarizationRetry` lifecycle events need to
+  stay ordered. `OnSummarizationRetry` can no longer fire concurrently from the split-turn path's two
+  goroutines (there's only one goroutine now).
+- **Split-turn summary join now uses upstream's template (model-facing change).** The history and
+  turn-prefix summaries are joined with `"\n\n---\n\n**Turn Context (split turn):**\n\n"` instead of
+  a bare `"\n"`, matching upstream's split-turn summary format. Any consumer that parses or displays
+  split-turn summary text will see the new separator.
+
+### Added
+
+- **`Usage{InputTokens, OutputTokens}` and `BranchSummary.Usage *Usage` (AGENT-20, upstream #6671).**
+  A new exported `Usage` type carries provider token-usage totals; `Compact` now attaches the
+  summarization call's usage to the persisted `BranchSummary` (and to `CompactResult`/`AfterCompactCtx`),
+  summing both calls for a split-turn summary via `combineUsage`. `Usage` is nil when the provider
+  reports no usage at all — it does not default to a zero-valued struct. The JSONL session backend
+  round-trips `BranchSummary.Usage` and is backward-compatible with pre-v0.9.0 summary lines that have
+  no `Usage` key at all (they load with `Usage == nil`).
+- **Length-truncated assistant messages' tool calls now fail instead of executing (AGENT-22, upstream
+  #6285).** When an assistant message's `MessageEndEvent.StopReason` is `llm.StopReasonLength`, every
+  tool call it carries may have truncated arguments (streamed arguments can parse yet still be
+  incomplete), so none are executed. Each gets a synthesized error `ToolResult` instead, with
+  upstream's exact message: `Tool call "<name>" was not executed: the response hit the output token
+  limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.` The loop
+  continues so the model can re-issue the call with complete arguments.
+- **Regression test pinning summarization requests carry no `SessionID` (AGENT-21, upstream #6618
+  parity).** `summarizeOnce`'s LLM request has always omitted `SessionID` (keeping summarization
+  cache- and affinity-isolated from the turn, matching upstream's fresh-routing-id-per-call
+  behavior); `TestSummarizationRequestsCarryNoSessionID` now pins that both the single-call and
+  split-turn summarization paths never leak the turn's `SessionID` into a summarization request, no
+  behavior change.
+
+### Fixed
+
+- **`bashThrottle` gained a settled guard, closing the ADR-0011 follow-up.** `tools/bash.go`'s
+  `bashThrottle` now drops any `OnChunk` callback that arrives after execution has settled
+  (`finalFlush`/`stop`), mirroring upstream's `acceptingOutput` flag (`shell-output.ts`) and porting
+  upstream's "ignores output callbacks after execution settles" test case, which the AGENT-18 R2
+  sweep deliberately skipped. Closes the gap recorded in ADR-0011's Consequences section: no shipped
+  `ExecutionEnv` (`OSEnv`) can trigger the race structurally, but a future adapter that delivers
+  `OnChunk` asynchronously after `Exec` returns no longer leaks a further emit or leaves a throttle
+  timer running past `ExecuteStream`'s return.
+
 ## [0.8.0] - 2026-07-25
 
 ### Added
