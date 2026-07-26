@@ -331,6 +331,7 @@ type bashThrottle struct {
 	timer       *time.Timer
 	dirty       bool
 	lastEmit    time.Time
+	settled     bool
 }
 
 // newBashThrottle creates a bashThrottle that emits partial results through
@@ -344,6 +345,12 @@ func newBashThrottle(emit func(pi.ToolResult)) *bashThrottle {
 func (t *bashThrottle) onChunk(_ []byte, progress func() ShellProgress) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.settled {
+		// Late callback from a contract-violating ExecutionEnv (Exec
+		// returned already): drop it, mirroring upstream shell-output.ts's
+		// acceptingOutput guard.
+		return
+	}
 	t.getProgress = progress
 	t.scheduleLocked()
 }
@@ -405,7 +412,11 @@ func (t *bashThrottle) emitLocked() {
 // pair: any pending timer is cancelled first, then the final capture is
 // unconditionally (re-)emitted so the caller's last partial update always
 // reflects the command's true final output - even if it arrived within the
-// same throttle window as the previous emit.
+// same throttle window as the previous emit. Also marks the throttle
+// settled: mirroring upstream shell-output.ts's acceptingOutput flag, any
+// OnChunk call arriving after this point (only possible from a
+// contract-violating ExecutionEnv whose Exec has already returned) is
+// dropped rather than leaking a further emit or re-arming a timer.
 func (t *bashThrottle) finalFlush(capture *ShellCapture) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -418,15 +429,18 @@ func (t *bashThrottle) finalFlush(capture *ShellCapture) {
 	t.getProgress = func() ShellProgress { return final }
 	t.dirty = true
 	t.emitLocked()
+	t.settled = true
 }
 
-// stop cancels any pending timer without emitting. Deferred immediately
-// after the throttle is created so a pending timer is never left running
-// (and its goroutine never leaked) on any exit path, including
-// ExecuteShellWithCapture itself returning an error before a final capture
-// ever existed.
+// stop cancels any pending timer without emitting, and marks the throttle
+// settled (see finalFlush's doc comment for what that guards against).
+// Deferred immediately after the throttle is created so a pending timer is
+// never left running (and its goroutine never leaked) on any exit path,
+// including ExecuteShellWithCapture itself returning an error before a
+// final capture ever existed.
 func (t *bashThrottle) stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.clearTimerLocked()
+	t.settled = true
 }
