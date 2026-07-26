@@ -24,7 +24,7 @@ func TestCallerCtxCancellation_HonoringTool(t *testing.T) {
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "block", Args: echoArgs("x")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "block", Args: echoArgs("x")}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -113,7 +113,7 @@ func TestCallerCtxCancellation_LeakedTool(t *testing.T) {
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "leak-1", ToolName: "hang", Args: echoArgs("x")}
-			events <- llm.ToolCallEndEvent{CallID: "leak-1"}
+			events <- llm.ToolCallEndEvent{CallID: "leak-1", ToolName: "hang", Args: echoArgs("x")}
 			events <- llm.MessageEndEvent{}
 		},
 	}

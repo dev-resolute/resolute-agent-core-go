@@ -63,7 +63,7 @@ func TestShouldStopAfterTurn(t *testing.T) {
 						<-firstTurnGate
 						if tt.firstTurnTool {
 							events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "noop", Args: []byte("{}")}
-							events <- llm.ToolCallEndEvent{CallID: "c1"}
+							events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "noop", Args: []byte("{}")}
 						} else {
 							events <- llm.TextDeltaEvent{Delta: "first"}
 						}
@@ -136,7 +136,7 @@ func TestShouldStopAfterTurnInvokedOnTerminate(t *testing.T) {
 		name: "test",
 		emit: func(events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "stop", Args: []byte("{}")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "stop", Args: []byte("{}")}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -210,7 +210,7 @@ func TestShouldStopAfterTurnContext(t *testing.T) {
 			name: "tool-call turn has HadToolCalls=true",
 			emitFn: func(events chan<- llm.LLMEvent) {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "noop", Args: []byte("{}")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "noop", Args: []byte("{}")}
 				events <- llm.MessageEndEvent{}
 			},
 			wantTurn: 1, wantHadCalls: true,

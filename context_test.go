@@ -133,7 +133,11 @@ func startProbedPrompt(t *testing.T, callerCtx context.Context) (*Agent, *EventS
 				ToolName: "ctx_probe",
 				Args:     json.RawMessage(`{}`),
 			}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.ToolCallEndEvent{
+				CallID:   "c1",
+				ToolName: "ctx_probe",
+				Args:     json.RawMessage(`{}`),
+			}
 			events <- llm.MessageEndEvent{}
 		},
 	}

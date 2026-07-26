@@ -105,7 +105,7 @@ func TestStreamingToolLoopEmitsToolUpdateEvents(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "streamer", Args: echoArgs("go")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "streamer", Args: echoArgs("go")}
 				events <- llm.MessageEndEvent{}
 				return
 			}
@@ -211,9 +211,9 @@ func TestStreamingToolLoopConcurrentEmitRace(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "streamer", Args: echoArgs("one")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "streamer", Args: echoArgs("one")}
 				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "streamer", Args: echoArgs("two")}
-				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.ToolCallEndEvent{CallID: "c2", ToolName: "streamer", Args: echoArgs("two")}
 				events <- llm.MessageEndEvent{}
 				return
 			}

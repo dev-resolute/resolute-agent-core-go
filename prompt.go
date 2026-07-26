@@ -465,6 +465,7 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	var assistantText strings.Builder
 	var messageStarted bool
 	var assistantMsg Message
+	var stopReason llm.StopReason
 
 	for ev := range stream.Events {
 		switch e := ev.(type) {
@@ -482,6 +483,12 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 			}
 			r.emit(ThinkingDeltaEvent{Delta: e.Delta})
 		case llm.ToolCallStartEvent:
+			// Deliberately not collected: providers that stream arguments
+			// incrementally (openai-compat) finalize them only on
+			// ToolCallEndEvent. The agent-level ToolCallStartEvent fires once
+			// the call is complete so consumers (and the harness durable log)
+			// always see finalized arguments.
+		case llm.ToolCallEndEvent:
 			toolCalls = append(toolCalls, llm.ToolCallContent{
 				CallID:           e.CallID,
 				ToolName:         e.ToolName,
@@ -507,6 +514,8 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 		case llm.UsageEvent:
 			// Track usage if needed
 		case llm.MessageEndEvent:
+			stopReason = e.StopReason
+			_ = stopReason // consumed by failTruncatedToolCalls (Task 2)
 			if assistantText.Len() > 0 {
 				assistantMsg = NewText("assistant", assistantText.String())
 			}
