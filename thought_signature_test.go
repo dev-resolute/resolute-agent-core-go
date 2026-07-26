@@ -65,7 +65,7 @@ func TestToolCallThoughtSignatureRoundTripsThroughLoop(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping"), ThoughtSignature: sig}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping"), ThoughtSignature: sig}
 				events <- llm.MessageEndEvent{}
 				return
 			}
@@ -217,7 +217,7 @@ func TestToolCallStartEventCarriesThoughtSignature(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping"), ThoughtSignature: sig}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping"), ThoughtSignature: sig}
 				events <- llm.MessageEndEvent{}
 				return
 			}

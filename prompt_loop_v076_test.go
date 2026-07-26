@@ -127,7 +127,7 @@ func TestToolCallTurnAutoContinues_v076(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("ping")}
 				events <- llm.MessageEndEvent{}
 				return
 			}
@@ -186,7 +186,7 @@ func TestSingleToolCallEndEventPerCall_v076(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("x")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("x")}
 				events <- llm.MessageEndEvent{}
 				return
 			}
@@ -256,7 +256,7 @@ func TestToolLeakOnShutdownTimeout_v076(t *testing.T) {
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "leak-1", ToolName: "hang", Args: echoArgs("x")}
-			events <- llm.ToolCallEndEvent{CallID: "leak-1"}
+			events <- llm.ToolCallEndEvent{CallID: "leak-1", ToolName: "hang", Args: echoArgs("x")}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -364,7 +364,7 @@ func TestToolHonorsCtxEmitsNoLeak_v076(t *testing.T) {
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "wait", Args: echoArgs("x")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "wait", Args: echoArgs("x")}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -451,9 +451,9 @@ func TestPreflightStopsSiblingsAfterAbort_v076(t *testing.T) {
 	provider := &loopProvider{
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-			events <- llm.ToolCallEndEvent{CallID: "c1"}
+			events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
 			events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-			events <- llm.ToolCallEndEvent{CallID: "c2"}
+			events <- llm.ToolCallEndEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
 			events <- llm.MessageEndEvent{}
 		},
 	}
@@ -520,9 +520,9 @@ func TestSteeringDefersUntilBatchFinishes_v076(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
 				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.ToolCallEndEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
 				<-steerReady
 				events <- llm.MessageEndEvent{}
 				return
@@ -610,9 +610,9 @@ func TestAfterToolCallErrorYieldsErrorResult_v076(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
 				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.ToolCallEndEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
 				events <- llm.MessageEndEvent{}
 				return
 			}
@@ -716,7 +716,7 @@ func TestPerCallErrorsPersistAsErrorResult_v076(t *testing.T) {
 				emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 					if call == 1 {
 						events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: tt.toolName, Args: echoArgs("x")}
-						events <- llm.ToolCallEndEvent{CallID: "c1"}
+						events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: tt.toolName, Args: echoArgs("x")}
 						events <- llm.MessageEndEvent{}
 						return
 					}
@@ -777,9 +777,9 @@ func TestParallelToolEndCompletionOrderResultsSourceOrder_v076(t *testing.T) {
 		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
 			if call == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "echo", Args: echoArgs("first")}
 				events <- llm.ToolCallStartEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
-				events <- llm.ToolCallEndEvent{CallID: "c2"}
+				events <- llm.ToolCallEndEvent{CallID: "c2", ToolName: "echo", Args: echoArgs("second")}
 				events <- llm.MessageEndEvent{}
 				return
 			}

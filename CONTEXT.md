@@ -22,7 +22,7 @@
 
 **ConvertToLLM**: User-provided function called at the LLM-API boundary. Transforms agent transcript into provider-shaped payload.
 
-**Thought signature**: Opaque byte token Gemini 3 attaches to a tool call and requires back verbatim when the call is replayed — missing it rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models. The prompt runner copies it from `llm.ToolCallStartEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), and `DefaultConvertToLLM` replays it through `Message.ToolCallThoughtSignature()` onto the rebuilt `llm.ToolCallContent`. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini 3 must replay it the same way.
+**Thought signature**: Opaque byte token Gemini 3 attaches to a tool call and requires back verbatim when the call is replayed — missing it rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models. The prompt runner copies it from `llm.ToolCallEndEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), and `DefaultConvertToLLM` replays it through `Message.ToolCallThoughtSignature()` onto the rebuilt `llm.ToolCallContent`. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini 3 must replay it the same way.
 
 ### Tools
 
@@ -90,7 +90,7 @@ of the call and is **not** cancellable through `ctx` once acquired — only key 
 **Hook context structs**: Each hook receives a concrete per-hook context struct (`BeforeToolCallCtx`, `BeforeCompactCtx`, etc.).
 
 **OnSummarizationRetry**:
-Optional `Hooks` field fired at each retry-lifecycle point (scheduled, attempt-start, finished) when a Compact summarization call fails transiently and `AgentConfig.SummarizationRetry` allows a retry. May fire concurrently from split-turn summarization's two goroutines. The Go-shaped equivalent of upstream 0.81.1's `summarization_retry_*` events — Compact has no EventStream, so a hook is the delivery path.
+Optional `Hooks` field fired at each retry-lifecycle point (scheduled, attempt-start, finished) when a Compact summarization call fails transiently and `AgentConfig.SummarizationRetry` allows a retry. Fires serially; split-turn summarization runs its two calls in sequence (v0.9.0, upstream #5536). The Go-shaped equivalent of upstream 0.81.1's `summarization_retry_*` events — Compact has no EventStream, so a hook is the delivery path.
 _Avoid_: SummarizationRetryEvent (ours is a hook, not an AgentEvent)
 
 ### Session storage

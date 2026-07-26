@@ -89,15 +89,14 @@ upstream's per-call-context design:
 - **No Windows support today.** Any Windows `ExecutionEnv.Exec` implementation needs its own
   process-tree-kill primitive; `env_unix.go`'s `//go:build unix` tag makes the gap a compile-time
   absence (no `OSEnv.Exec` on non-Unix), not a silent runtime failure.
-- **A known, deliberately out-of-scope gap surfaced while writing the v0.8.0 fixture sweep** (see
-  `bash_test.go`'s package comment and the Task-13 report): `ExecutionEnv.Exec`'s `OnChunk` contract
-  is only *implicitly* synchronous — satisfied structurally by `OSEnv`, which blocks until every
-  `OnChunk` call has completed — but nothing in the interface's documented contract forbids an
-  adapter from calling `OnChunk` asynchronously after `Exec` returns, and `bash.go`'s `bashThrottle`
-  has no guard against that (unlike upstream's explicit `acceptingOutput` flag,
-  `shell-output.ts`). Any future adapter with async output delivery must either deliver `OnChunk`
-  synchronously within `Exec`, or `bash.go` needs a settled-guard added first — tracked as a
-  follow-up, not fixed by this ADR.
+- **A known gap surfaced while writing the v0.8.0 fixture sweep** (see `bash_test.go`'s package
+  comment and the Task-13 report): `ExecutionEnv.Exec`'s `OnChunk` contract is only *implicitly*
+  synchronous — satisfied structurally by `OSEnv`, which blocks until every `OnChunk` call has
+  completed — but nothing in the interface's documented contract forbids an adapter from calling
+  `OnChunk` asynchronously after `Exec` returns, and `bash.go`'s `bashThrottle` had no guard against
+  that (unlike upstream's explicit `acceptingOutput` flag, `shell-output.ts`). **Fixed in v0.9.0**:
+  `bashThrottle` gained a settled guard; the upstream "ignores output callbacks after execution
+  settles" case is ported.
 - **ADR-0004 lineage.** This ADR extends ADR-0004's ctx-first-MUST-contract and
   Go-errors-over-thrown-exceptions decisions from "tool execution generally" to "the filesystem/shell
   seam tools execute against" — the same reasoning, applied one layer down.

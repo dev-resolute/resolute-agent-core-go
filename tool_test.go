@@ -191,7 +191,7 @@ func TestPrepareArgumentsErrorYieldsToolErrorResult(t *testing.T) {
 			n := calls.Add(1)
 			if n == 1 {
 				events <- llm.ToolCallStartEvent{CallID: "c1", ToolName: "broken", Args: []byte("{}")}
-				events <- llm.ToolCallEndEvent{CallID: "c1"}
+				events <- llm.ToolCallEndEvent{CallID: "c1", ToolName: "broken", Args: []byte("{}")}
 				events <- llm.MessageEndEvent{}
 			} else {
 				events <- llm.TextDeltaEvent{Delta: "done"}

@@ -17,30 +17,18 @@ import (
 
 // bash_test.go exercises bash.go, the port of
 // packages/agent/src/harness/tools/bash.ts @0.82.0. Every case in upstream's
-// test/harness/tools.test.ts "bash" describe block is ported here except
-// "ignores output callbacks after execution settles", which is deliberately
-// NOT ported: that case proves executeShellWithCapture's `acceptingOutput`
-// flag (shell-output.ts) drops an onStdout/onStderr call that a
-// pathologically-implemented ExecutionEnv fires asynchronously, after its
-// exec() call has already resolved. This port's real ExecutionEnv (OSEnv,
-// env_unix.go) cannot produce that race structurally - Exec blocks on
-// cmd.Wait, which only returns once every OnChunk call from the output-
-// pumping goroutines has already completed (see ExecuteShellWithCapture's
-// own doc comment in shell_output.go for the same reasoning applied to a
-// related upstream safety-net check) - so there is no equivalent guard in
-// this port's shellCaptureState/bashThrottle. A synthetic ExecutionEnv that
-// fires OnChunk from a goroutine after Exec returns (mirroring upstream's
-// LateOutputExecutionEnv) was drafted to check this port's behavior in that
-// scenario and found a real gap: bashThrottle.scheduleLocked has no
-// "settled" guard, so such a late call would leak into a caller's update
-// stream and leave an unstoppable timer running past ExecuteStream's
-// return - a latent bug in an ExecutionEnv implementation this port does
-// not ship (no adapter here can trigger it), reachable only by a
-// contract-violating adapter. Fixing bash.go/shell_output.go is outside
-// this task's declared file scope (tools/*_test.go, docs) and was not
-// silently done here; flagged in the task-13 report as a follow-up for
-// whoever builds the first remote/sandbox ExecutionEnv adapter this port's
-// ADR-0011 anticipates.
+// test/harness/tools.test.ts "bash" describe block is ported here,
+// including "ignores output callbacks after execution settles"
+// (TestBashThrottleIgnoresLateChunksAfterSettle, below): bashThrottle now
+// carries a settled guard (bash.go), set under its mutex by both
+// finalFlush and stop, mirroring upstream shell-output.ts's acceptingOutput
+// flag - an OnChunk call arriving after the throttle has settled (only
+// reachable via a contract-violating ExecutionEnv whose Exec fires OnChunk
+// asynchronously after already returning; this port's real ExecutionEnv,
+// OSEnv, cannot produce that race structurally, see
+// ExecuteShellWithCapture's doc comment in shell_output.go) is dropped
+// rather than leaking a further emit or re-arming a timer past
+// ExecuteStream's return.
 
 // streamingTool locally mirrors the root package's unexported streamingTool
 // capability interface (tool.go, Task 4) so this package's tests can drive
@@ -769,5 +757,100 @@ func TestBashToolStreamingThrottledEmits(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("ExecuteStream did not return within 10s")
+	}
+}
+
+// lateOutputExecEnv is a synthetic ExecutionEnv mirroring upstream's
+// LateOutputExecutionEnv (tools.test.ts): its Exec delivers one chunk of
+// output synchronously, then returns success - but also fires OnChunk a
+// second time from a goroutine, after Exec (and the whole ExecuteStream
+// call built on it) has already returned. That is a contract violation of
+// ExecSpec.OnChunk's doc comment (env.go), which only OSEnv (the shipped
+// adapter) happens to satisfy structurally - see this package's package
+// comment for why. It exists to drive
+// TestBashThrottleIgnoresLateChunksAfterSettle through the real
+// ExecuteStream call site rather than bashThrottle directly.
+type lateOutputExecEnv struct {
+	*OSEnv
+}
+
+// lateOutputDelay is how long lateOutputExecEnv.Exec waits before firing
+// its late OnChunk call: comfortably longer than the real work
+// ExecuteStream does between Exec returning and throttle.stop() completing
+// (a handful of mutex operations - not a race in practice), but shorter
+// than bashUpdateThrottle, so that absent the settled guard the late call
+// would arm a throttle timer rather than emit immediately - exercising both
+// leak paths onChunk's early return has to close off.
+const lateOutputDelay = 30 * time.Millisecond
+
+// Exec fires "before\n" synchronously (a normal, in-contract chunk) and
+// returns success immediately, then - from a goroutine, after
+// lateOutputDelay - fires "late\n" through the same OnChunk callback.
+func (e *lateOutputExecEnv) Exec(_ context.Context, spec ExecSpec) (*ExecResult, error) {
+	if spec.OnChunk != nil {
+		spec.OnChunk([]byte("before\n"))
+		go func() {
+			time.Sleep(lateOutputDelay)
+			spec.OnChunk([]byte("late\n"))
+		}()
+	}
+	return &ExecResult{ExitCode: 0}, nil
+}
+
+// TestBashThrottleIgnoresLateChunksAfterSettle ports upstream's "ignores
+// output callbacks after execution settles": an ExecutionEnv that fires
+// OnChunk asynchronously after Exec returns must not leak an update into
+// the caller's stream, nor leave a timer running past ExecuteStream's
+// return. Driven through ExecuteStream with lateOutputExecEnv rather than
+// against bashThrottle directly, so this also exercises the call-site
+// wiring (bashThrottle.finalFlush/stop) that sets the settled guard.
+func TestBashThrottleIgnoresLateChunksAfterSettle(t *testing.T) {
+	osEnv, _ := newTestOSEnv(t)
+	env := &lateOutputExecEnv{OSEnv: osEnv}
+	tool := NewBashTool(BashToolOptions{Env: env})
+	st, ok := tool.(streamingTool)
+	if !ok {
+		t.Fatal("bash tool does not implement the streaming capability")
+	}
+	args := mustMarshalBashParams(t, bashParams{Command: "ignored - lateOutputExecEnv.Exec never runs it"})
+
+	var mu sync.Mutex
+	var emitted []pi.ToolResult
+	result, err := st.ExecuteStream(context.Background(), "c1", args, func(r pi.ToolResult) {
+		mu.Lock()
+		emitted = append(emitted, r)
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result.IsError = true, Content = %q", result.Content)
+	}
+	if result.Content != "before\n" {
+		t.Errorf("Content = %q, want %q", result.Content, "before\n")
+	}
+
+	mu.Lock()
+	before := len(emitted)
+	mu.Unlock()
+
+	// By now lateOutputExecEnv's Exec has fired its late OnChunk call
+	// (lateOutputDelay is far smaller than this sleep) - and this leaves
+	// enough headroom past bashUpdateThrottle for a throttle timer armed by
+	// that late call (had the settled guard not caught it first) to have
+	// fired too.
+	time.Sleep(2 * bashUpdateThrottle)
+
+	mu.Lock()
+	after := len(emitted)
+	mu.Unlock()
+	if after != before {
+		t.Fatalf("late OnChunk leaked an emit after settle: %d -> %d emits", before, after)
+	}
+	for _, r := range emitted {
+		if strings.Contains(r.Content, "late") {
+			t.Errorf("emitted result contains the late chunk's content: %q", r.Content)
+		}
 	}
 }
