@@ -515,7 +515,6 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 			// Track usage if needed
 		case llm.MessageEndEvent:
 			stopReason = e.StopReason
-			_ = stopReason // consumed by failTruncatedToolCalls (Task 2)
 			if assistantText.Len() > 0 {
 				assistantMsg = NewText("assistant", assistantText.String())
 			}
@@ -545,11 +544,40 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 
 	hadToolCalls := len(toolCalls) > 0
 	if hadToolCalls {
+		if stopReason == llm.StopReasonLength {
+			// A "length" stop means the output was cut off by the token
+			// limit, so every tool call in the message may carry truncated
+			// arguments. Fail them all instead of executing potentially
+			// borked calls (upstream #6285); the loop continues so the model
+			// can re-issue them.
+			if err := r.failTruncatedToolCalls(ctx, toolCalls); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
 		if err := r.executeTools(ctx, toolCalls, snap.tools); err != nil {
 			return false, err
 		}
 	}
 	return hadToolCalls, nil
+}
+
+// failTruncatedToolCalls synthesizes an error result for every tool call in a
+// length-truncated assistant message instead of executing it. Streamed
+// arguments can parse yet be silently incomplete, so none are safe to run;
+// each call gets an error result so the provider never sees a dangling call.
+func (r *promptRun) failTruncatedToolCalls(ctx context.Context, calls []llm.ToolCallContent) error {
+	for _, tc := range calls {
+		result := ToolResult{
+			Content: fmt.Sprintf("Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", tc.ToolName),
+			IsError: true,
+		}
+		r.emit(ToolCallEndEvent{CallID: tc.CallID, ToolName: tc.ToolName, Result: result})
+		if err := r.appendTranscript(ctx, NewToolResultMsg(tc.CallID, tc.ToolName, result)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // preparedCall is the outcome of preflighting one tool call. When immediate is
