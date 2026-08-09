@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.10.0] - 2026-08-09
+
+### Changed
+
+- **`resolute-llm-go` v0.10.1 → v0.12.0.** Paired dependency bump required by the
+  text/thinking thought-signature fields below.
+
+### Added
+
+- **Text thought signatures round-trip through the agent loop (upstream #7362
+  parity).** The prompt runner retains the last non-empty `ThoughtSignature` seen on
+  `llm.TextDeltaEvent`s (a signature typically arrives on one delta of a part,
+  possibly one with an empty `Delta`), persists it onto the assistant text message via
+  the new `NewTextWithSignature`, and `DefaultConvertToLLM` replays it through
+  `Message.TextThoughtSignature()` onto the rebuilt `llm.TextContent`. A signature with
+  no visible text still persists — Gemini attaches signatures to empty-text parts and
+  requires them echoed back, or the reasoning chain breaks. The agent-level
+  `TextDeltaEvent`/`ThinkingDeltaEvent` gained a `ThoughtSignature` field so
+  event-driven durable logs (harness) can persist it the same way, mirroring the
+  `ToolCallStartEvent` precedent.
+- **`NewThinkingWithSignature`, `Message.ThinkingText()`, and
+  `Message.ThinkingThoughtSignature()`.** Thinking messages get the same
+  signature-carrying body shape as text; `DefaultConvertToLLM` now replays both the
+  text and the signature onto `llm.ThinkingContent`. Signature-carrying bodies store an
+  object (`{"text", "thought_signature"}`); unsigned messages keep the classic
+  plain-string body, so pre-existing transcripts are byte-identical.
+- **Turn usage stamps the transcript (AGENT-24).** The prompt loop captures the turn's
+  `llm.UsageEvent` and stamps it onto the **last assistant message the turn produces**
+  (the text message, or the last tool_call) via the new `Message.WithUsage` — exactly
+  one message per turn carries its usage (upstream attaches usage per API response; our
+  turn spans several per-part messages). New `Message.Usage() *Usage` accessor; nil on
+  older transcripts and from providers that report none, so callers fall back to
+  `EstimateTokens`. The stamp rides the body (`usage` key) and round-trips through
+  JSONL; it is metadata and never reaches a provider. Callers of `ShouldCompact` can
+  now feed real input+output totals instead of estimates (what upstream's own caller
+  does with assistant-message usage). `findCutPoint` stays on estimates — upstream
+  parity, verified: its cut point is chars/4-estimated too.
+
+### Fixed
+
+- **`DefaultConvertToLLM` no longer drops thinking text.** The `thinking` case read
+  `Message.Text()`, which rejects the `thinking` type and returns `""`, so thinking
+  messages reached the provider with empty content. It now reads the new
+  `Message.ThinkingText()`.
+
 ## [0.9.0] - 2026-07-25
 
 ### Breaking (custom `llm.LLMProvider` test doubles only)

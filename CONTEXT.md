@@ -22,7 +22,7 @@
 
 **ConvertToLLM**: User-provided function called at the LLM-API boundary. Transforms agent transcript into provider-shaped payload.
 
-**Thought signature**: Opaque byte token Gemini 3 attaches to a tool call and requires back verbatim when the call is replayed — missing it rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models. The prompt runner copies it from `llm.ToolCallEndEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), and `DefaultConvertToLLM` replays it through `Message.ToolCallThoughtSignature()` onto the rebuilt `llm.ToolCallContent`. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini 3 must replay it the same way.
+**Thought signature**: Opaque byte token Gemini attaches to a tool call, a text part, or a thinking part and requires back verbatim when the part is replayed. Missing it on a tool call rejects the whole request (`400 INVALID_ARGUMENT`), so the auto-continued tool turn would always fail on `gemini-3*` models; dropping a *signed empty* text/thinking part breaks the reasoning chain (upstream #7362). The prompt runner copies it from `llm.ToolCallEndEvent` into the persisted tool_call body (`thought_signature`, via `NewToolCallWithSignature`), retains the last non-empty value from `llm.TextDeltaEvent`s into the persisted text body (`NewTextWithSignature` — a signature with no visible text still persists), and `DefaultConvertToLLM` replays both through `Message.ToolCallThoughtSignature()`/`Message.TextThoughtSignature()` onto the rebuilt contents. The agent-level `TextDeltaEvent`/`ThinkingDeltaEvent` forward it for durable-log consumers. Nil when absent — pre-existing transcripts and non-Gemini providers are unaffected; custom `ConvertToLLM` implementations targeting Gemini must replay it the same way.
 
 ### Tools
 
@@ -104,6 +104,9 @@ _Avoid_: SummarizationRetryEvent (ours is a hook, not an AgentEvent)
 **JSONLSession**: On-disk session backend. The format is **Go-native, append-only JSONL**: one line per entry, each the Go `Message` codec shape (flat `{"Role","Type","Body"}`). This is **not** wire-compatible with upstream's `{type,id,parentId,timestamp}` tree today; cross-runtime interchange is tracked as future work (a separate issue), not a current guarantee. Session-format migration is explicitly out of scope here.
 
 **BranchSummary**: Compaction artifact replacing a message range with a summary.
+
+**Usage**: Provider token-usage totals (`Usage{InputTokens, OutputTokens}`) recorded as metadata. Carried on `BranchSummary.Usage` (the summarization calls' totals, AGENT-20) and stamped by the prompt loop onto the **last assistant message of each turn** (`Message.WithUsage`, body `usage` key, AGENT-24) — exactly one message per turn carries it. Read via `Message.Usage()`; nil on older transcripts and from providers that report none, so consumers fall back to `EstimateTokens`. Metadata only: never sent to a provider.
+_Avoid_: TokenCount (that's the estimate), Quota
 
 ### Compaction
 
