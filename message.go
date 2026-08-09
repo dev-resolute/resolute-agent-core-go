@@ -23,6 +23,20 @@ func NewText(role, text string) Message {
 	return Message{Role: role, Type: "text", Body: body}
 }
 
+// NewTextWithSignature creates a text message carrying the provider's opaque
+// thought signature (Gemini). With an empty signature it is exactly NewText,
+// so transcripts without signatures keep the plain-string body shape.
+func NewTextWithSignature(role, text string, thoughtSignature []byte) Message {
+	if len(thoughtSignature) == 0 {
+		return NewText(role, text)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"text":              text,
+		"thought_signature": thoughtSignature,
+	})
+	return Message{Role: role, Type: "text", Body: body}
+}
+
 // NewToolCall creates a tool call message.
 func NewToolCall(role string, callID, toolName string, args json.RawMessage) Message {
 	body, _ := json.Marshal(map[string]any{
@@ -82,6 +96,21 @@ func NewThinking(role, text string) Message {
 	return Message{Role: role, Type: "thinking", Body: body}
 }
 
+// NewThinkingWithSignature creates a thinking message carrying the provider's
+// opaque thought signature (Gemini). With an empty signature it is exactly
+// NewThinking, so transcripts without signatures keep the plain-string body
+// shape.
+func NewThinkingWithSignature(role, text string, thoughtSignature []byte) Message {
+	if len(thoughtSignature) == 0 {
+		return NewThinking(role, text)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"text":              text,
+		"thought_signature": thoughtSignature,
+	})
+	return Message{Role: role, Type: "thinking", Body: body}
+}
+
 // NewSystem creates a system prompt message.
 func NewSystem(text string) Message {
 	return NewText("system", text)
@@ -119,13 +148,70 @@ func (m Message) ActiveToolNames() (names []string, ok bool) {
 }
 
 // Text extracts the text from a text-typed or branch_summary message.
+// Signature-carrying bodies (NewTextWithSignature) store an object; both
+// shapes read back.
 func (m Message) Text() string {
 	if m.Type != "text" && m.Type != "branch_summary" {
 		return ""
 	}
 	var s string
-	_ = json.Unmarshal(m.Body, &s)
-	return s
+	if err := json.Unmarshal(m.Body, &s); err == nil {
+		return s
+	}
+	var v struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(m.Body, &v)
+	return v.Text
+}
+
+// TextThoughtSignature extracts the provider's opaque thought signature from a
+// text message. Nil when absent (pre-existing transcripts, providers without
+// signatures) or when the message is not a text.
+func (m Message) TextThoughtSignature() []byte {
+	if m.Type != "text" {
+		return nil
+	}
+	var v struct {
+		ThoughtSignature []byte `json:"thought_signature"`
+	}
+	if err := json.Unmarshal(m.Body, &v); err != nil {
+		return nil
+	}
+	return v.ThoughtSignature
+}
+
+// ThinkingText extracts the text from a thinking message. Signature-carrying
+// bodies (NewThinkingWithSignature) store an object; both shapes read back.
+func (m Message) ThinkingText() string {
+	if m.Type != "thinking" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(m.Body, &s); err == nil {
+		return s
+	}
+	var v struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(m.Body, &v)
+	return v.Text
+}
+
+// ThinkingThoughtSignature extracts the provider's opaque thought signature
+// from a thinking message. Nil when absent or when the message is not a
+// thinking.
+func (m Message) ThinkingThoughtSignature() []byte {
+	if m.Type != "thinking" {
+		return nil
+	}
+	var v struct {
+		ThoughtSignature []byte `json:"thought_signature"`
+	}
+	if err := json.Unmarshal(m.Body, &v); err != nil {
+		return nil
+	}
+	return v.ThoughtSignature
 }
 
 // ToolCall extracts fields from a tool_call message.
@@ -176,4 +262,33 @@ func (m Message) ToolResult() (callID, toolName, content string, data json.RawMe
 		return "", "", "", nil, false, false
 	}
 	return v.CallID, v.ToolName, v.Content, v.Data, v.IsError, true
+}
+
+// WithUsage returns a copy of the message with provider token usage recorded
+// under the body's usage key, preserving existing fields. Plain-string bodies
+// (unsigned text/thinking) convert to the object form; the Usage is metadata
+// and is never sent to a provider.
+func (m Message) WithUsage(u Usage) Message {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(m.Body, &obj); err != nil || obj == nil {
+		obj = map[string]json.RawMessage{"text": m.Body}
+	}
+	raw, _ := json.Marshal(u)
+	obj["usage"] = raw
+	body, _ := json.Marshal(obj)
+	m.Body = body
+	return m
+}
+
+// Usage extracts the provider token usage recorded on the message (WithUsage).
+// Nil when absent — older transcripts, providers that report none — so
+// callers fall back to EstimateTokens.
+func (m Message) Usage() *Usage {
+	var v struct {
+		Usage *Usage `json:"usage"`
+	}
+	if err := json.Unmarshal(m.Body, &v); err != nil {
+		return nil
+	}
+	return v.Usage
 }

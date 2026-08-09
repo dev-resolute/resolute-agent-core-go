@@ -9,6 +9,41 @@ import (
 	"github.com/dev-resolute/resolute-agent-core-go"
 )
 
+// A usage-stamped message round-trips: the usage body field survives
+// persistence and reload verbatim.
+func TestJSONLSessionUsageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewJSONLSession(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONLSession: %v", err)
+	}
+
+	id, err := s.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	want := pi.Usage{InputTokens: 100, OutputTokens: 42}
+	if err := s.Append(ctx, id, pi.NewText("assistant", "hello").WithUsage(want)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	msgs, err := s.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("loaded %d messages, want 1", len(msgs))
+	}
+	got := msgs[0].Usage()
+	if got == nil || *got != want {
+		t.Errorf("Usage() after round trip = %+v, want %+v", got, want)
+	}
+	if msgs[0].Text() != "hello" {
+		t.Errorf("Text() after round trip = %q, want hello", msgs[0].Text())
+	}
+}
+
 func TestJSONLSessionCRUD(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

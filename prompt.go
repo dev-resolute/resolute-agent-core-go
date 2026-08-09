@@ -463,6 +463,11 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 
 	var toolCalls []llm.ToolCallContent
 	var assistantText strings.Builder
+	var turnUsage *Usage
+	// textThoughtSignature retains the last non-empty signature seen on text
+	// deltas: providers attach it to a single delta of the part (possibly one
+	// with an empty Delta), not to every delta.
+	var textThoughtSignature []byte
 	var messageStarted bool
 	var assistantMsg Message
 	var stopReason llm.StopReason
@@ -470,18 +475,21 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 	for ev := range stream.Events {
 		switch e := ev.(type) {
 		case llm.TextDeltaEvent:
+			if len(e.ThoughtSignature) > 0 {
+				textThoughtSignature = e.ThoughtSignature
+			}
 			if !messageStarted {
 				messageStarted = true
 				r.emit(MessageStartEvent{Role: "assistant", MessageType: "text"})
 			}
 			assistantText.WriteString(e.Delta)
-			r.emit(TextDeltaEvent{Delta: e.Delta})
+			r.emit(TextDeltaEvent{Delta: e.Delta, ThoughtSignature: e.ThoughtSignature})
 		case llm.ThinkingDeltaEvent:
 			if !messageStarted {
 				messageStarted = true
 				r.emit(MessageStartEvent{Role: "assistant", MessageType: "thinking"})
 			}
-			r.emit(ThinkingDeltaEvent{Delta: e.Delta})
+			r.emit(ThinkingDeltaEvent{Delta: e.Delta, ThoughtSignature: e.ThoughtSignature})
 		case llm.ToolCallStartEvent:
 			// Deliberately not collected: providers that stream arguments
 			// incrementally (openai-compat) finalize them only on
@@ -512,11 +520,13 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 				ServerHint: e.ServerHint,
 			})
 		case llm.UsageEvent:
-			// Track usage if needed
+			// At most one per stream (llm v0.14.0 contract); stamped onto the
+			// turn's last assistant message below.
+			turnUsage = &Usage{InputTokens: e.InputTokens, OutputTokens: e.OutputTokens}
 		case llm.MessageEndEvent:
 			stopReason = e.StopReason
-			if assistantText.Len() > 0 {
-				assistantMsg = NewText("assistant", assistantText.String())
+			if assistantText.Len() > 0 || len(textThoughtSignature) > 0 {
+				assistantMsg = NewTextWithSignature("assistant", assistantText.String(), textThoughtSignature)
 			}
 			r.emit(MessageEndEvent{Message: assistantMsg})
 		}
@@ -527,15 +537,25 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("llm stream: %w", result.Err)
 	}
 
-	if assistantText.Len() > 0 {
-		assistantMsg = NewText("assistant", assistantText.String())
-		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
-			return false, err
-		}
+	var turnMessages []Message
+	if assistantText.Len() > 0 || len(textThoughtSignature) > 0 {
+		// A signature with no visible text still persists: Gemini attaches
+		// signatures to empty-text parts and requires them echoed back
+		// (upstream #7362).
+		turnMessages = append(turnMessages, NewTextWithSignature("assistant", assistantText.String(), textThoughtSignature))
 	}
 	for _, tc := range toolCalls {
-		assistantMsg = NewToolCallWithSignature("assistant", tc.CallID, tc.ToolName, tc.Args, tc.ThoughtSignature)
-		if err := r.appendTranscript(ctx, assistantMsg); err != nil {
+		turnMessages = append(turnMessages, NewToolCallWithSignature("assistant", tc.CallID, tc.ToolName, tc.Args, tc.ThoughtSignature))
+	}
+	// Exactly one message per turn carries the turn's provider usage: the last
+	// assistant message produced (upstream attaches usage per response; our
+	// turn spans several per-part messages).
+	if turnUsage != nil && len(turnMessages) > 0 {
+		turnMessages[len(turnMessages)-1] = turnMessages[len(turnMessages)-1].WithUsage(*turnUsage)
+	}
+	for _, m := range turnMessages {
+		assistantMsg = m
+		if err := r.appendTranscript(ctx, m); err != nil {
 			return false, err
 		}
 	}

@@ -39,12 +39,23 @@ type TurnEndEvent struct{ Turn int }
 func (TurnEndEvent) isAgentEvent() {}
 
 // TextDeltaEvent carries a fragment of assistant text.
-type TextDeltaEvent struct{ Delta string }
+type TextDeltaEvent struct {
+	Delta string
+	// ThoughtSignature is the provider's opaque signature for the text part
+	// this delta belongs to (Gemini). Present on at most some deltas — possibly
+	// one with an empty Delta — so durable-log consumers retain the last
+	// non-empty value; empty for providers without signatures.
+	ThoughtSignature []byte
+}
 
 func (TextDeltaEvent) isAgentEvent() {}
 
 // ThinkingDeltaEvent carries a fragment of assistant thinking.
-type ThinkingDeltaEvent struct{ Delta string }
+type ThinkingDeltaEvent struct {
+	Delta string
+	// ThoughtSignature behaves as on TextDeltaEvent, for thinking parts.
+	ThoughtSignature []byte
+}
 
 func (ThinkingDeltaEvent) isAgentEvent() {}
 

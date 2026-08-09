@@ -413,8 +413,11 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 		switch msg.Type {
 		case "text":
 			out = append(out, llm.Message{
-				Role:    msg.Role,
-				Content: llm.TextContent{Text: msg.Text()},
+				Role: msg.Role,
+				Content: llm.TextContent{
+					Text:             msg.Text(),
+					ThoughtSignature: msg.TextThoughtSignature(),
+				},
 			})
 		case "tool_call":
 			callID, toolName, args, ok := msg.ToolCall()
@@ -446,8 +449,11 @@ func DefaultConvertToLLM(messages []Message) []llm.Message {
 			}
 		case "thinking":
 			out = append(out, llm.Message{
-				Role:    msg.Role,
-				Content: llm.ThinkingContent{Text: msg.Text()},
+				Role: msg.Role,
+				Content: llm.ThinkingContent{
+					Text:             msg.ThinkingText(),
+					ThoughtSignature: msg.ThinkingThoughtSignature(),
+				},
 			})
 		case "branch_summary":
 			out = append(out, llm.Message{
