@@ -104,3 +104,37 @@ func TestResumePreconditions(t *testing.T) {
 		t.Errorf("Resume on text tail err = %v, want ErrNothingToResume", err)
 	}
 }
+
+// Resume while a prompt is in flight hits the single-runner guard before any
+// session work, so it fails with ErrAgentBusy (AGENT-25 review pin).
+func TestResumeWhilePromptInFlight(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	provider := &loopProvider{
+		emit: func(call int, _ llm.LLMRequest, events chan<- llm.LLMEvent) {
+			<-release
+			events <- llm.TextDeltaEvent{Delta: "ok"}
+			events <- llm.MessageEndEvent{}
+		},
+	}
+	a, err := NewAgent(AgentConfig{Providers: []llm.LLMProvider{provider}, DefaultModel: "test/model"})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+
+	stream, err := a.Prompt(context.Background(), NewText("user", "go"), PromptOpts{})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	if _, err := a.Resume(context.Background(), PromptOpts{SessionID: a.State().SessionID}); !errors.Is(err, ErrAgentBusy) {
+		t.Errorf("Resume while prompt in flight err = %v, want ErrAgentBusy", err)
+	}
+
+	close(release)
+	_, result := drain(t, stream)
+	if result.Err != nil {
+		t.Fatalf("prompt result.Err = %v, want nil", result.Err)
+	}
+}

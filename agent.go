@@ -108,6 +108,12 @@ func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*Even
 // ToolResult.Suspend once their external results have landed (AGENT-25).
 // Precondition: opts.SessionID names a session whose transcript tail is a
 // tool_result message; otherwise ErrNothingToResume.
+// Leave opts.SystemPrompt empty: the override appends a system message before
+// the resume tail check, so the tail is never a tool_result and Resume always
+// returns ErrNothingToResume (after the override has already mutated the
+// session). A SessionID no backend knows is ambiguous: the outcome depends on
+// the backend's Load behavior — memory sessions load empty (ErrNothingToResume),
+// an erroring backend surfaces its own error.
 func (a *Agent) Resume(ctx context.Context, opts PromptOpts) (*EventStream, error) {
 	if opts.SessionID == "" {
 		return nil, ErrNothingToResume
@@ -198,6 +204,9 @@ func (a *Agent) start(ctx context.Context, msg *Message, opts PromptOpts) (*Even
 		if err != nil {
 			return nil, fmt.Errorf("loading transcript for resume: %w", err)
 		}
+		// Advisory check, not a lock: the loop re-loads the transcript, and
+		// under the single-runner guard + the harness's single-writer
+		// discipline the two reads cannot disagree in practice.
 		if len(msgs) == 0 || msgs[len(msgs)-1].Type != "tool_result" {
 			return nil, ErrNothingToResume
 		}
