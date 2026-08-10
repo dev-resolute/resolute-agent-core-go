@@ -16,6 +16,11 @@ type ToolResult struct {
 	Data      json.RawMessage
 	IsError   bool
 	Terminate bool
+	// Suspend marks a call that resolves externally (HARNESS-15's task tool):
+	// the loop persists sibling results, persists NO tool_result for this
+	// call — the pending call is the suspension point — and ends the prompt
+	// gracefully after the batch, reporting PromptResult.Suspended.
+	Suspend bool
 	// Images carries optional image parts of the result (flows to llm.ToolResultContent.Images).
 	Images []llm.ImageContent
 }
