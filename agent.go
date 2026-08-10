@@ -100,6 +100,32 @@ func NewAgent(cfg AgentConfig) (*Agent, error) {
 // Prompt starts a new prompt and returns its EventStream. The user message is
 // the second argument; per-prompt overrides are carried on opts.
 func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*EventStream, error) {
+	return a.start(ctx, &msg, opts)
+}
+
+// Resume continues the agent loop from the current transcript without
+// appending input — the entry point for prompts suspended on
+// ToolResult.Suspend once their external results have landed (AGENT-25).
+// Precondition: opts.SessionID names a session whose transcript tail is a
+// tool_result message; otherwise ErrNothingToResume.
+// Leave opts.SystemPrompt empty: the override appends a system message before
+// the resume tail check, so the tail is never a tool_result and Resume always
+// returns ErrNothingToResume (after the override has already mutated the
+// session). A SessionID no backend knows is ambiguous: the outcome depends on
+// the backend's Load behavior — memory sessions load empty (ErrNothingToResume),
+// an erroring backend surfaces its own error.
+func (a *Agent) Resume(ctx context.Context, opts PromptOpts) (*EventStream, error) {
+	if opts.SessionID == "" {
+		return nil, ErrNothingToResume
+	}
+	return a.start(ctx, nil, opts)
+}
+
+// start launches the prompt loop. Prompt passes the user message to append;
+// Resume passes nil, continuing from the session's existing transcript — its
+// SessionID guarantee means the resolution below always takes the
+// existing-session branch, never the create branch.
+func (a *Agent) start(ctx context.Context, msg *Message, opts PromptOpts) (*EventStream, error) {
 	// Single-runner guard: at most one prompt in flight per Agent. Release the
 	// slot on any error path before the loop goroutine takes ownership of it.
 	if !a.running.CompareAndSwap(0, 1) {
@@ -166,9 +192,24 @@ func (a *Agent) Prompt(ctx context.Context, msg Message, opts PromptOpts) (*Even
 		}
 	}
 
-	// Append user prompt
-	if err := a.session.Append(ctx, sid, msg); err != nil {
-		return nil, fmt.Errorf("appending user message: %w", err)
+	// Append user prompt — a resume appends nothing and instead requires the
+	// transcript tail to be a tool_result: the external resolution of the
+	// suspended call it continues from.
+	if msg != nil {
+		if err := a.session.Append(ctx, sid, *msg); err != nil {
+			return nil, fmt.Errorf("appending user message: %w", err)
+		}
+	} else {
+		msgs, err := a.session.Load(ctx, sid)
+		if err != nil {
+			return nil, fmt.Errorf("loading transcript for resume: %w", err)
+		}
+		// Advisory check, not a lock: the loop re-loads the transcript, and
+		// under the single-runner guard + the harness's single-writer
+		// discipline the two reads cannot disagree in practice.
+		if len(msgs) == 0 || msgs[len(msgs)-1].Type != "tool_result" {
+			return nil, ErrNothingToResume
+		}
 	}
 
 	thinking := opts.Thinking

@@ -16,6 +16,9 @@ import (
 type PromptResult struct {
 	Messages []Message
 	Err      error
+	// Suspended reports the prompt ended with at least one Suspend-marked
+	// tool call pending external resolution (AGENT-25).
+	Suspended bool
 }
 
 // promptRun holds the execution state of a single in-flight prompt. It is not
@@ -37,6 +40,10 @@ type promptRun struct {
 	branchSummaries []BranchSummary
 	lastEvent       AgentEvent
 	terminated      bool
+	// suspended is only ever written and read on the loop goroutine (set in
+	// executeTools, read in loop/finish); the mutex in its accessors is
+	// defensive, mirroring terminated.
+	suspended bool
 
 	// send only via emit — raw sends bypass the eventsClosed guard
 	events     chan AgentEvent
@@ -133,6 +140,18 @@ func (r *promptRun) setPhase(p AgentPhase) {
 	r.mu.Unlock()
 }
 
+func (r *promptRun) setSuspended() {
+	r.mu.Lock()
+	r.suspended = true
+	r.mu.Unlock()
+}
+
+func (r *promptRun) isSuspended() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.suspended
+}
+
 func (r *promptRun) emit(ev AgentEvent) {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
@@ -169,7 +188,7 @@ func (r *promptRun) finish(err error) {
 	r.setPhase(PhaseDone)
 	msgs := r.transcriptCopy()
 	r.emit(AgentEndEvent{Messages: msgs})
-	r.done <- PromptResult{Messages: msgs, Err: err}
+	r.done <- PromptResult{Messages: msgs, Err: err, Suspended: r.isSuspended()}
 }
 
 func (r *promptRun) loadTranscript(ctx context.Context) error {
@@ -300,6 +319,11 @@ func (r *promptRun) loop(ctx context.Context) {
 		}
 
 		if r.terminated {
+			r.finish(nil)
+			return
+		}
+
+		if r.isSuspended() {
 			r.finish(nil)
 			return
 		}
@@ -786,8 +810,14 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 	// Persist tool results in assistant source order. Any per-call error — an
 	// unknown tool, a BeforeToolCall rejection, an execute failure, or an
 	// AfterToolCall failure — lands as an error result carrying the error text,
-	// never an empty success.
+	// never an empty success. A Suspend-marked result persists nothing: the
+	// pending tool_call stays in the transcript as the suspension point.
+	suspended := false
 	for _, res := range results {
+		if res.err == nil && res.result.Suspend {
+			suspended = true
+			continue
+		}
 		content := res.result.Content
 		isErr := res.result.IsError
 		if res.err != nil {
@@ -803,6 +833,9 @@ func (r *promptRun) executeTools(ctx context.Context, toolCalls []llm.ToolCallCo
 		if err := r.appendTranscript(ctx, msg); err != nil {
 			return err
 		}
+	}
+	if suspended {
+		r.setSuspended()
 	}
 
 	return nil

@@ -12,6 +12,8 @@
 
 **PromptResult**: Terminal value delivered on `EventStream.Done`. Contains final message transcript and any error. Renamed from v0.1.x `RunResult`.
 
+**Suspend/Resume**: `ToolResult.Suspend` marks a call that resolves externally (HARNESS-15's task tool): the loop persists sibling results but no tool_result for the suspended call — the pending tool_call in the transcript is the suspension point — and ends the prompt gracefully, reporting `PromptResult.Suspended`. Once the external resolution has landed as a tool_result record, `Agent.Resume(ctx, opts)` continues the loop from that tool-result tail without appending input (same `EventStream` contract as `Prompt`); it returns `ErrNothingToResume` when no session was given or the transcript tail is not a tool_result.
+
 **Setters**: `SetModel`/`SetTools`/`SetSystemPrompt`/`SetThinkingLevel`/`SetSkills`/`SetActiveTools` mutate the Agent under its mutex; the next turn snapshot picks up the change, never the in-flight turn. `SetTools` and `SetActiveTools` return an error and leave the Agent unchanged on invalid input (see Registered vs active tools).
 
 **Turn snapshot**: Immutable copy of the Agent's runtime config taken under a read lock at turn start. Setters during a turn affect the next snapshot, not the one in flight.
