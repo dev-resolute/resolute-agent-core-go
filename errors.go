@@ -18,8 +18,13 @@ var (
 	// is currently in flight. It is also the cancel cause of the idle context
 	// returned by Agent.Context(), ensuring any stale nested work tied to
 	// that context exits immediately rather than leaking.
-	ErrNoPromptInFlight   = errors.New("no prompt in flight")
-	ErrSessionNotFound    = errors.New("session not found")
+	ErrNoPromptInFlight = errors.New("no prompt in flight")
+	ErrSessionNotFound  = errors.New("session not found")
+
+	// ErrNothingToResume is returned by Agent.Resume when the transcript tail
+	// is not tool results (or no session was given): there is no suspended
+	// prompt to continue.
+	ErrNothingToResume    = errors.New("nothing to resume")
 	ErrUnsupportedFeature = errors.New("unsupported feature")
 	ErrDuplicateToolName  = errors.New("duplicate tool name")
 	ErrUnknownActiveTool  = errors.New("active tool not registered")

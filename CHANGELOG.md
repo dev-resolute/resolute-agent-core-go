@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.11.0] - 2026-08-09
+
+### Added
+
+- **`ToolResult.Suspend` (AGENT-25).** A tool can now mark a call as resolving
+  externally — motivated by HARNESS-15's task tool, whose outcome the harness
+  produces out-of-band. The loop persists sibling results as usual but persists
+  NO tool_result for the suspended call — the pending tool_call stays in the
+  transcript as the suspension point — and ends the prompt gracefully after the
+  batch. `Terminate` dominates when both are set in an all-terminating batch.
+- **`PromptResult.Suspended` (AGENT-25).** The terminal result reports that the
+  prompt ended with at least one Suspend-marked call pending external
+  resolution, so the caller can distinguish a suspended prompt from a completed
+  one and wake the session once the external outcome lands.
+- **`Agent.Resume(ctx, opts)` (AGENT-25).** The wake entry point for a suspended
+  prompt: once the harness has authored the external tool_result record, Resume
+  continues the agent loop from the session's existing transcript without
+  appending input, driving the next provider call with the landed result in
+  context. `Prompt` and `Resume` share one launcher (`start`); resume takes the
+  existing-session branch (never the create branch) and `BeforeAgentStart`
+  fires identically.
+- **`ErrNothingToResume` (AGENT-25).** `Resume` returns this sentinel when no
+  session was given or the transcript tail is not a tool_result — there is no
+  suspended prompt to continue.
+
 ## [0.10.0] - 2026-08-09
 
 ### Changed

@@ -40,7 +40,10 @@ type promptRun struct {
 	branchSummaries []BranchSummary
 	lastEvent       AgentEvent
 	terminated      bool
-	suspended       bool
+	// suspended is only ever written and read on the loop goroutine (set in
+	// executeTools, read in loop/finish); the mutex in its accessors is
+	// defensive, mirroring terminated.
+	suspended bool
 
 	// send only via emit — raw sends bypass the eventsClosed guard
 	events     chan AgentEvent
