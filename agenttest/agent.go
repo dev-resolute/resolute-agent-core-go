@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 	"github.com/dev-resolute/resolute-agent-core-go/session"
 	"github.com/dev-resolute/resolute-llm-go"
 	"github.com/dev-resolute/resolute-llm-go/gemini"

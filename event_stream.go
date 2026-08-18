@@ -1,4 +1,4 @@
-package pi
+package resolute
 
 // EventStream is the shared return shape for an Agent prompt. It carries a
 // stream of typed events on Events (closed by the sender when the prompt

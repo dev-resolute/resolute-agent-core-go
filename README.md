@@ -21,16 +21,16 @@ go get github.com/dev-resolute/resolute-agent-core-go
 ## Usage
 
 ```go
-agent, _ := pi.NewAgent(pi.AgentConfig{
+agent, _ := resolute.NewAgent(resolute.AgentConfig{
     Providers:    []llm.LLMProvider{provider},
     DefaultModel: "openai-compat/gpt-4o",
-    Tools:        []pi.RegisteredTool{myTool},
+    Tools:        []resolute.RegisteredTool{myTool},
 })
 
-stream, _ := agent.Prompt(ctx, pi.NewText("user", "Hello"), pi.PromptOpts{})
+stream, _ := agent.Prompt(ctx, resolute.NewText("user", "Hello"), resolute.PromptOpts{})
 
 for ev := range stream.Events {
-    // type-switch on pi.AgentEvent
+    // type-switch on resolute.AgentEvent
 }
 result := <-stream.Done
 

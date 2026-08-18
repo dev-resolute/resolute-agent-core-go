@@ -1,4 +1,4 @@
-package pi
+package resolute
 
 import "github.com/dev-resolute/resolute-llm-go"
 

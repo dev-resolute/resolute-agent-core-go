@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 // RunAndCollect prompts the agent, drains both channels, and returns all

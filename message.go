@@ -1,5 +1,5 @@
 // Package pi provides a stateful agent loop built on pi-llm-go.
-package pi
+package resolute
 
 import (
 	"encoding/json"

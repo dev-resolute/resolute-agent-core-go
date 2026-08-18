@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 var _ pi.SessionRepo = (*JSONLSession)(nil)
@@ -32,7 +32,7 @@ func NewJSONLSession(dir string) (*JSONLSession, error) {
 
 // Create implements SessionRepo.
 func (j *JSONLSession) Create(ctx context.Context) (pi.SessionID, error) {
-	id := pi.SessionID(NewSessionID())
+	id := pi.SessionID(pi.NewSessionID())
 	f, err := os.Create(j.path(id))
 	if err != nil {
 		return "", fmt.Errorf("creating session file: %w", err)

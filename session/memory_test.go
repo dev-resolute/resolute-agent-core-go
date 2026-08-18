@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 func TestMemorySessionCRUD(t *testing.T) {

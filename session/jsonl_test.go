@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 // A usage-stamped message round-trips: the usage body field survives

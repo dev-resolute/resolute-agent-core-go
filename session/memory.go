@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dev-resolute/resolute-agent-core-go"
+	pi "github.com/dev-resolute/resolute-agent-core-go"
 )
 
 var _ pi.SessionRepo = (*MemorySession)(nil)
@@ -33,7 +33,7 @@ func (m *MemorySession) Create(ctx context.Context) (pi.SessionID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter++
-	id := pi.SessionID(NewSessionID())
+	id := pi.SessionID(pi.NewSessionID())
 	m.sessions[id] = nil
 	m.meta[id] = pi.SessionMeta{
 		ID:        id,

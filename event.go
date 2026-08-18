@@ -1,4 +1,4 @@
-package pi
+package resolute
 
 // AgentEvent is a sealed interface for every event that flows on Run.Events.
 type AgentEvent interface {
