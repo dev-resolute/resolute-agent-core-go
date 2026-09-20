@@ -67,6 +67,7 @@ func isTransientSummarizationError(err error) bool {
 	}
 	if errors.Is(err, llm.ErrProviderFatal) ||
 		errors.Is(err, llm.ErrContextOverflow) ||
+		errors.Is(err, ErrSummaryTruncated) ||
 		errors.Is(err, context.Canceled) {
 		return false
 	}

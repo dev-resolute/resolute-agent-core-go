@@ -854,3 +854,24 @@ func TestBashThrottleIgnoresLateChunksAfterSettle(t *testing.T) {
 		}
 	}
 }
+
+// A command killed by a signal (no exit code exists; POSIX reports -1) is an
+// error result naming the signal death, never a silent success with partial
+// output (upstream #9577).
+func TestBashToolSignalTerminationIsError(t *testing.T) {
+	env, err := NewOSEnv(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewOSEnv: %v", err)
+	}
+	tool := NewBashTool(BashToolOptions{Env: env})
+	res, err := tool.Execute(context.Background(), "c1", []byte(`{"command":"kill -TERM $$"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("IsError = false, want true for signal-terminated command (content: %q)", res.Content)
+	}
+	if !strings.Contains(res.Content, "terminated by signal") {
+		t.Errorf("content = %q, want signal-termination status", res.Content)
+	}
+}

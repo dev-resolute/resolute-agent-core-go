@@ -28,4 +28,11 @@ var (
 	ErrUnsupportedFeature = errors.New("unsupported feature")
 	ErrDuplicateToolName  = errors.New("duplicate tool name")
 	ErrUnknownActiveTool  = errors.New("active tool not registered")
+	// ErrInvalidToolSchema is returned at registration when a tool carries no
+	// parameter schema or an invalid one (upstream #9300).
+	ErrInvalidToolSchema = errors.New("tool has no valid parameter schema")
+	// ErrSummaryTruncated marks a summarization call that hit the output
+	// token limit; the partial summary is rejected, never persisted
+	// (upstream #7048).
+	ErrSummaryTruncated = errors.New("summary truncated at output token limit")
 )

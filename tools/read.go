@@ -122,8 +122,9 @@ func NewReadTool(opts ReadToolOptions) pi.RegisteredTool {
 	imageProcessor := opts.ImageProcessor
 
 	return pi.NewTool(pi.Tool[readParams]{
-		Name:        "read",
-		Description: readToolDescription,
+		Name:                "read",
+		Description:         readToolDescription,
+		ConstrainedSampling: strictPreferSampling,
 		Execute: func(ctx context.Context, p readParams) (pi.ToolResult, error) {
 			resolvedPath, err := ResolveReadToolPath(ctx, env, p.Path)
 			if err != nil {

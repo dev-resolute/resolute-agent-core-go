@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,5 +134,39 @@ func TestJSONLSessionBranchSummaryUsageRoundTrip(t *testing.T) {
 	}
 	if old.Summary != "old format, no usage key" {
 		t.Errorf("summaries[1].Summary = %q, want the old-format line's summary", old.Summary)
+	}
+}
+
+// A session file whose last line lacks a trailing newline (externally
+// written, crashed writer) is repaired before the next append, so the new
+// record never concatenates onto the old one (upstream #8345).
+func TestJSONLSessionAppendRepairsMissingTrailingNewline(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := NewJSONLSession(dir)
+	if err != nil {
+		t.Fatalf("NewJSONLSession: %v", err)
+	}
+	id, err := s.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Write a record with no trailing newline, simulating a crashed writer.
+	raw, _ := json.Marshal(pi.NewText("user", "first"))
+	if err := os.WriteFile(filepath.Join(dir, string(id)+".jsonl"), raw, 0640); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	if err := s.Append(ctx, id, pi.NewText("assistant", "second")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	msgs, err := s.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("loaded %d messages, want 2 (repair must keep both records)", len(msgs))
 	}
 }

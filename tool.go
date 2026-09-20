@@ -38,6 +38,14 @@ type RegisteredTool interface {
 	IsSequential() bool
 }
 
+// constrainedSamplingTool is an optional capability a RegisteredTool may
+// implement to opt into provider-side strict JSON-schema sampling. The
+// prompt loop type-asserts for it when building llm.ToolDef values; tools
+// that don't implement it request no constrained sampling.
+type constrainedSamplingTool interface {
+	ToolConstrainedSampling() *llm.ConstrainedSampling
+}
+
 // streamingTool is an optional capability a RegisteredTool may implement to
 // stream partial results during execution. The execution site type-asserts
 // for it; tools built from Tool.Execute (rather than Tool.ExecuteStream) do
@@ -69,6 +77,10 @@ type Tool[P any] struct {
 	// PrepareArguments is an optional hook that runs on raw args before
 	// unmarshalling into P. See PrepareArgumentsFunc for details.
 	PrepareArguments PrepareArgumentsFunc
+	// ConstrainedSampling optionally opts the tool into provider-side
+	// strict JSON-schema sampling (llm.ConstrainedSampling). Nil means the
+	// tool requests no constrained sampling.
+	ConstrainedSampling *llm.ConstrainedSampling
 }
 
 // NewTool creates a RegisteredTool from a typed Tool. Exactly one of
@@ -84,6 +96,7 @@ func NewTool[P any](t Tool[P]) RegisteredTool {
 		sequential:       t.Sequential,
 		execute:          t.Execute,
 		prepareArguments: t.PrepareArguments,
+		sampling:         t.ConstrainedSampling,
 	}
 	if t.ExecuteStream != nil {
 		return &streamingTypedTool[P]{typedTool: base, executeStream: t.ExecuteStream}
@@ -100,6 +113,12 @@ type DynamicToolOption func(*dynamicTool)
 // continues.
 func WithPrepareArguments(fn PrepareArgumentsFunc) DynamicToolOption {
 	return func(t *dynamicTool) { t.prepareArguments = fn }
+}
+
+// WithConstrainedSampling opts a dynamic tool into provider-side strict
+// JSON-schema sampling.
+func WithConstrainedSampling(cs *llm.ConstrainedSampling) DynamicToolOption {
+	return func(t *dynamicTool) { t.sampling = cs }
 }
 
 // NewDynamicTool creates a tool from a runtime schema and raw handler.
@@ -124,11 +143,16 @@ type typedTool[P any] struct {
 	sequential       bool
 	execute          func(ctx context.Context, params P) (ToolResult, error)
 	prepareArguments PrepareArgumentsFunc
+	sampling         *llm.ConstrainedSampling
 }
 
 func (t *typedTool[P]) Name() string        { return t.name }
 func (t *typedTool[P]) Description() string { return t.description }
 func (t *typedTool[P]) IsSequential() bool  { return t.sequential }
+
+// ToolConstrainedSampling implements the optional constrainedSamplingTool
+// capability the prompt loop checks for.
+func (t *typedTool[P]) ToolConstrainedSampling() *llm.ConstrainedSampling { return t.sampling }
 
 func (t *typedTool[P]) Schema() json.RawMessage {
 	var p P
@@ -213,12 +237,17 @@ type dynamicTool struct {
 	sequential       bool
 	execute          func(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error)
 	prepareArguments PrepareArgumentsFunc
+	sampling         *llm.ConstrainedSampling
 }
 
 func (t *dynamicTool) Name() string            { return t.name }
 func (t *dynamicTool) Description() string     { return t.description }
 func (t *dynamicTool) IsSequential() bool      { return t.sequential }
 func (t *dynamicTool) Schema() json.RawMessage { return t.schema }
+
+// ToolConstrainedSampling implements the optional constrainedSamplingTool
+// capability the prompt loop checks for.
+func (t *dynamicTool) ToolConstrainedSampling() *llm.ConstrainedSampling { return t.sampling }
 
 func (t *dynamicTool) Execute(ctx context.Context, callID string, args json.RawMessage) (ToolResult, error) {
 	prepared, err := runPrepare(ctx, t.prepareArguments, args)

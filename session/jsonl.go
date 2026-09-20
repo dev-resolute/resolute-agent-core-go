@@ -46,11 +46,18 @@ func (j *JSONLSession) Append(ctx context.Context, id pi.SessionID, msgs ...pi.M
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	f, err := os.OpenFile(j.path(id), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	f, err := os.OpenFile(j.path(id), os.O_APPEND|os.O_CREATE|os.O_RDWR, 0640)
 	if err != nil {
 		return fmt.Errorf("opening session file: %w", err)
 	}
 	defer f.Close()
+
+	// A file lacking a trailing newline (externally written, crashed writer)
+	// would otherwise have the next record concatenated onto its last line,
+	// corrupting both (upstream #8345). Repair before appending.
+	if err := ensureTrailingNewline(f); err != nil {
+		return fmt.Errorf("repairing session file: %w", err)
+	}
 
 	for _, msg := range msgs {
 		line, err := json.Marshal(msg)
@@ -126,11 +133,15 @@ func (j *JSONLSession) AppendBranchSummary(ctx context.Context, id pi.SessionID,
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	f, err := os.OpenFile(j.path(id)+".summaries", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	f, err := os.OpenFile(j.path(id)+".summaries", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0640)
 	if err != nil {
 		return fmt.Errorf("opening summaries file: %w", err)
 	}
 	defer f.Close()
+
+	if err := ensureTrailingNewline(f); err != nil {
+		return fmt.Errorf("repairing summaries file: %w", err)
+	}
 
 	line, err := json.Marshal(summary)
 	if err != nil {
@@ -185,4 +196,25 @@ func (j *JSONLSession) Delete(ctx context.Context, id pi.SessionID) error {
 
 func (j *JSONLSession) path(id pi.SessionID) string {
 	return filepath.Join(j.dir, string(id)+".jsonl")
+}
+
+// ensureTrailingNewline appends a newline when f is non-empty and does not
+// end with one, so the next appended record starts on its own line.
+func ensureTrailingNewline(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	_, err = f.WriteString("\n")
+	return err
 }

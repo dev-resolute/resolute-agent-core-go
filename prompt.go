@@ -439,6 +439,9 @@ func (r *promptRun) runOneTurn(ctx context.Context) (bool, error) {
 			Description: t.Description(),
 			Schema:      t.Schema(),
 		}
+		if st, ok := t.(constrainedSamplingTool); ok {
+			tools[i].ConstrainedSampling = st.ToolConstrainedSampling()
+		}
 	}
 
 	caps := provider.Capabilities(modelID)

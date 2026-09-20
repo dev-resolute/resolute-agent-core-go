@@ -1,6 +1,9 @@
 package resolute
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // validateToolConfig is the shared validator for the registered tool set and the
 // active subset, used by NewAgent, SetTools, and SetActiveTools. Registered tool
@@ -15,6 +18,11 @@ func validateToolConfig(tools []RegisteredTool, activeNames []string) error {
 			return fmt.Errorf("tool %q: %w", name, ErrDuplicateToolName)
 		}
 		registered[name] = struct{}{}
+		// A tool without a valid parameter schema breaks provider requests
+		// downstream; reject it at registration instead (upstream #9300).
+		if schema := t.Schema(); len(schema) == 0 || !json.Valid(schema) {
+			return fmt.Errorf("tool %q: %w", name, ErrInvalidToolSchema)
+		}
 	}
 	if activeNames == nil {
 		return nil

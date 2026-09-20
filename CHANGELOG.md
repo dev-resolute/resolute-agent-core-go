@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.13.0] - 2026-09-20
+
+> Ports upstream pi 0.84.2–0.86.0 (rediff record:
+> `docs/issues/REDIFF-0.84.1-to-0.86.0.md` in the pi-research workspace).
+
+### Changed
+
+- **`resolute-llm-go` v0.12.0 → v0.13.0.** Picks up the Kimi `cached_tokens`
+  fix, the Mistral fragmented tool-call merge, the Gemini 3 Pro
+  thinking-level clamp, and the `x-session-id` affinity header.
+- **Built-in `read`/`bash`/`edit`/`write` tools request strict-prefer
+  JSON-schema constrained sampling by default (upstream 0.86.0; previously
+  behind `PI_EXPERIMENTAL`).** Re-register a tool with `ConstrainedSampling`
+  nil to opt out; providers without strict-tools support silently fall back.
+
+### Added
+
+- **Per-model compaction budgets (upstream 0.86.0
+  `compaction.modelOverrides`).** `AgentConfig.CompactionModelOverrides` maps
+  a model ref (`"provider/model"`) or bare model id to a `CompactionBudget`
+  (`ReserveTokens`/`KeepRecentTokens`); the flat
+  `ReserveTokens`/`KeepRecentTokens` fields are the fallback, resolved per
+  field by the new `CompactionSettings.ForModel`.
+- **`Tool.ConstrainedSampling` and `WithConstrainedSampling`** opt typed and
+  dynamic tools into provider-side strict sampling. The prompt loop picks
+  the setting up through the optional `constrainedSamplingTool` capability
+  assertion — `RegisteredTool` is unchanged, so existing implementations are
+  unaffected.
+
+### Fixed
+
+- **Truncated summaries are rejected, never persisted (upstream #7048).** A
+  summarization call ending with `StopReasonLength` now fails with
+  `ErrSummaryTruncated` instead of silently persisting a half-written
+  checkpoint missing its tail sections. The error is non-transient for
+  `SummarizationRetry` (retrying a truncation is pointless).
+- **Session files missing a trailing newline are repaired before append
+  (upstream #8345).** The next record no longer concatenates onto the last
+  line, corrupting both; applies to both the transcript and the summaries
+  file.
+- **Signal-terminated shell commands report the signal death (upstream
+  #9577).** A killed command (POSIX exit code -1) now produces an error
+  result reading "Command terminated by signal" instead of "exited with
+  code -1".
+- **Tools without a valid parameter schema are rejected at registration
+  (upstream #9300).** `validateToolConfig` (shared by `NewAgent`, `SetTools`,
+  `SetActiveTools`) returns `ErrInvalidToolSchema` for an empty or invalid
+  schema instead of letting the tool break provider requests downstream.
+
+### Verified already-compliant / not applicable
+
+- Summarization requests already expose no tools and no `toolChoice`
+  (upstream #8649) and carry no output-token cap (upstream #8845).
+- Edit tool already accepts a single edit object as a one-edit array
+  (upstream #7835); write tool reports true byte counts (upstream #8979 —
+  Go `len` is bytes); skill loading already strips BOMs (#8337), discovers
+  nested skill dirs, and never treats root README/AGENTS files as skills
+  (#7805); skills are offered independently of the active tool set (#8552);
+  tool cwd is explicit via `ExecutionEnv` (#8627).
+- Threshold/mid-run auto-compaction items (#6879, #8328, #9740), the
+  auto-compaction cancellation races (#9340/#9777), and the agent-level
+  retry backoff cap (retry.maxAgentDelayMs — the provider ladder already
+  caps server-requested waits at 60s) are N/A: the prompt loop has no
+  automatic compaction and no turn-level retry; `Compact` is caller-driven
+  with ctx cancellation throughout.
+- Deferred to a future release with the two big 0.86.0 features
+  (transcript-backed system-prompt/tool updates, cache warming): none in
+  this repo.
+
+## [0.12.0] - 2026-08-09
+
+### Changed
+
+- **Package rename `pi` → `resolute`** (module already
+  `github.com/dev-resolute/resolute-agent-core-go`); aliases unchanged. No
+  behavioral changes; pairs with the same rename across the workspace.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added

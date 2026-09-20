@@ -116,6 +116,8 @@ _Avoid_: TokenCount (that's the estimate), Quota
 
 **Cut point**: Transcript index separating "summarize" from "keep verbatim".
 
+**Model override**: `AgentConfig.CompactionModelOverrides` entry (`CompactionBudget`) giving one model its own `ReserveTokens`/`KeepRecentTokens`, resolved by `CompactionSettings.ForModel` — full ref first, then bare model id, per field, with the flat config fields as fallback (v0.13.0, upstream 0.86.0 `compaction.modelOverrides`).
+
 **SummarizationRetryPolicy**:
 `AgentConfig` field configuring bounded retries with exponential backoff (`BaseDelay * 2^(attempt-1)`, capped at `MaxDelay`) for Compact's summarization calls. Zero value disables retries. Ported from upstream 0.81.1.
 _Avoid_: RetryConfig, CompactionRetry
