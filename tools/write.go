@@ -50,8 +50,9 @@ const operationAbortedMessage = "Operation aborted"
 func NewWriteTool(opts WriteToolOptions) pi.RegisteredTool {
 	env := opts.Env
 	return pi.NewTool(pi.Tool[writeParams]{
-		Name:        "write",
-		Description: writeToolDescription,
+		Name:                "write",
+		Description:         writeToolDescription,
+		ConstrainedSampling: strictPreferSampling,
 		Execute: func(ctx context.Context, p writeParams) (pi.ToolResult, error) {
 			absolutePath, err := ResolveToolPath(ctx, env, p.Path)
 			if err != nil {

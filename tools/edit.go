@@ -89,9 +89,10 @@ type editToolDetails struct {
 func NewEditTool(opts EditToolOptions) pi.RegisteredTool {
 	env := opts.Env
 	return pi.NewTool(pi.Tool[editParams]{
-		Name:             "edit",
-		Description:      editToolDescription,
-		PrepareArguments: prepareEditArguments,
+		Name:                "edit",
+		Description:         editToolDescription,
+		PrepareArguments:    prepareEditArguments,
+		ConstrainedSampling: strictPreferSampling,
 		Execute: func(ctx context.Context, p editParams) (pi.ToolResult, error) {
 			// Ported from edit.ts's validateEditInput, called before
 			// resolveToolPath - see editInputInvalidMessage's doc comment.

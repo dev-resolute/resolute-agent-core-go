@@ -111,11 +111,46 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`
 
+// CompactionBudget is a per-model token budget override (upstream 0.86.0
+// compaction.modelOverrides). Zero fields fall back to the base settings.
+type CompactionBudget struct {
+	ReserveTokens    int
+	KeepRecentTokens int
+}
+
 // CompactionSettings controls when and how compaction runs.
 type CompactionSettings struct {
 	Enabled          bool
 	ReserveTokens    int
 	KeepRecentTokens int
+	// ModelOverrides maps a model reference ("provider/model" or bare model
+	// id) to budget overrides; ordinary settings are the fallback.
+	ModelOverrides map[string]CompactionBudget
+}
+
+// ForModel resolves the effective settings for a model: an override entry
+// (full ref first, then bare id) wins per field, with the base settings as
+// fallback (upstream 0.86.0).
+func (s CompactionSettings) ForModel(model string) CompactionSettings {
+	if len(s.ModelOverrides) == 0 || model == "" {
+		return s
+	}
+	ov, ok := s.ModelOverrides[model]
+	if !ok {
+		if _, bare, err := parseModelRef(model); err == nil {
+			ov, ok = s.ModelOverrides[bare]
+		}
+	}
+	if !ok {
+		return s
+	}
+	if ov.ReserveTokens > 0 {
+		s.ReserveTokens = ov.ReserveTokens
+	}
+	if ov.KeepRecentTokens > 0 {
+		s.KeepRecentTokens = ov.KeepRecentTokens
+	}
+	return s
 }
 
 // CompactOpts carries options for a compaction operation.
@@ -234,7 +269,8 @@ func (a *Agent) Compact(ctx context.Context, opts CompactOpts) (*CompactResult, 
 		Enabled:          true,
 		ReserveTokens:    a.config.ReserveTokens,
 		KeepRecentTokens: a.config.KeepRecentTokens,
-	}
+		ModelOverrides:   a.config.CompactionModelOverrides,
+	}.ForModel(a.config.DefaultModel)
 	if opts.KeepRecentTokens > 0 {
 		settings.KeepRecentTokens = opts.KeepRecentTokens
 	}
@@ -521,6 +557,10 @@ func (a *Agent) summarizeWithLLM(ctx context.Context, provider llm.LLMProvider, 
 // #6618 uses a fresh routing id per call with prompt caching disabled; an
 // absent SessionID achieves the same isolation here — no affinity headers, no
 // prompt_cache_key). Covered by TestSummarizationRequestsCarryNoSessionID.
+//
+// A summary truncated by the output token limit is rejected rather than
+// persisted: a half-written checkpoint loses the tail sections (Next Steps,
+// Critical Context) silently (upstream #7048).
 func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, modelID string, msgs []Message) (string, *Usage, error) {
 	llmMsgs := DefaultConvertToLLM(msgs)
 	req := llm.LLMRequest{
@@ -531,6 +571,7 @@ func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, mod
 	stream := provider.Stream(ctx, req)
 	var summary strings.Builder
 	var usage *Usage
+	var stop llm.StopReason
 	for ev := range stream.Events {
 		switch e := ev.(type) {
 		case llm.TextDeltaEvent:
@@ -541,11 +582,16 @@ func (a *Agent) summarizeOnce(ctx context.Context, provider llm.LLMProvider, mod
 			}
 			usage.InputTokens += e.InputTokens
 			usage.OutputTokens += e.OutputTokens
+		case llm.MessageEndEvent:
+			stop = e.StopReason
 		}
 	}
 	result := <-stream.Done
 	if result.Err != nil {
 		return "", nil, result.Err
+	}
+	if stop == llm.StopReasonLength {
+		return "", nil, fmt.Errorf("summary truncated at output token limit: %w", ErrSummaryTruncated)
 	}
 	return strings.TrimSpace(summary.String()), usage, nil
 }

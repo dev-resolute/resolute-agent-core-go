@@ -37,6 +37,10 @@ type AgentConfig struct {
 	ThinkingBudgets  map[llm.ThinkingLevel]int
 	ReserveTokens    int
 	KeepRecentTokens int
+	// CompactionModelOverrides overrides ReserveTokens/KeepRecentTokens per
+	// model (upstream 0.86.0 compaction.modelOverrides); the flat fields are
+	// the fallback. Keys are model refs ("provider/model") or bare model ids.
+	CompactionModelOverrides map[string]CompactionBudget
 	// SummarizationRetry configures bounded retries with exponential backoff
 	// for the summarization calls made by Compact. The zero value disables
 	// retries, matching pre-0.7.0 behavior. Retry lifecycle is reported

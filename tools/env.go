@@ -7,7 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/dev-resolute/resolute-llm-go"
 )
+
+// strictPreferSampling is the shared strict-prefer constrained-sampling
+// config the built-in read/bash/edit/write tools register with (upstream
+// 0.86.0 default, previously behind PI_EXPERIMENTAL). Providers that don't
+// support strict tools silently fall back; callers can re-register a tool
+// with ConstrainedSampling nil to opt out.
+var strictPreferSampling = &llm.ConstrainedSampling{Strict: llm.StrictPrefer}
 
 // env.go defines the ExecutionEnv seam: the filesystem/shell boundary that
 // built-in tools (read/write/edit/bash, ported in later tasks) run over,

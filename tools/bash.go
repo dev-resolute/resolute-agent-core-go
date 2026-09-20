@@ -125,8 +125,9 @@ type bashParams struct {
 func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 	env := opts.Env
 	return pi.NewTool(pi.Tool[bashParams]{
-		Name:        "bash",
-		Description: bashToolDescription,
+		Name:                "bash",
+		Description:         bashToolDescription,
+		ConstrainedSampling: strictPreferSampling,
 		ExecuteStream: func(ctx context.Context, p bashParams, emit func(pi.ToolResult)) (pi.ToolResult, error) {
 			if err := validateBashTimeout(p.Timeout); err != nil {
 				return pi.ToolResult{IsError: true, Content: err.Error()}, nil
@@ -191,6 +192,12 @@ func NewBashTool(opts BashToolOptions) pi.RegisteredTool {
 				}
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, status)}, nil
 			case capture.ExitCode != 0:
+				// A signal-terminated process reports ExitCode -1 on POSIX (no
+				// exit code exists): name the signal death rather than printing
+				// a nonsense code (upstream #9577).
+				if capture.ExitCode < 0 {
+					return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, "Command terminated by signal")}, nil
+				}
 				status := fmt.Sprintf("Command exited with code %d", capture.ExitCode)
 				return pi.ToolResult{IsError: true, Content: appendBashStatus(outputText, status)}, nil
 			}
