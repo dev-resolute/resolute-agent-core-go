@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1] - 2026-10-14
+
+### Changed
+
+- **resolute-llm-go v0.14.0.** Picks up Gemini 4 (argon) support (`class4`
+  classifier: thinkingLevel enum, strict tool sampling, signed-replay
+  tool-call IDs, vision; MINIMAL clamps to LOW).
+
 ## [0.13.0] - 2026-09-20
 
 > Ports upstream pi 0.84.2–0.86.0 (rediff record:
